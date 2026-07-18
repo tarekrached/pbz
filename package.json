@@ -9,6 +9,10 @@
   "bin": {
     "pbz": "./pbz.mjs"
   },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "smoke": "node test/smoke.mjs"
+  },
   "exports": {
     ".": "./lib/pixelblaze.mjs"
   }
