@@ -27,6 +27,8 @@
     node tools/pbz.mjs activate <Name or id>              switch the active pattern
     node tools/pbz.mjs brightness <0..1> [--save]         set global brightness (ephemeral unless --save)
     node tools/pbz.mjs limit <0..100>                     set the firmware brightness CAP (persisted; the power-safety limit)
+    node tools/pbz.mjs config [--check]                   print device/LED settings; --check asserts colorOrder=WRGB, pixelCount=170
+    node tools/pbz.mjs set-config key=value […]           update device/LED settings (colorOrder, pixelCount, name, …)
 
   Notes:
     - `run` replaces the running program in place — great for fast iteration. It
@@ -37,6 +39,8 @@
       slider values are 0..1 and toggles are 0/1.
     - `limit` is the load-bearing power-safety cap (see ../CLAUDE.md) — it clamps hardware
       output regardless of pattern/slider. `brightness` is the ordinary dimmer.
+    - `config --check` guards CLAUDE.md invariant #2 (WRGB color order) and the installed
+      170-pixel ring — run it if the rig's behavior looks off before touching wiring.
 */
 
 import { readFile } from 'node:fs/promises';
@@ -64,6 +68,12 @@ function resolveHost() {
   die('No host: pass --host=IP, set $PB_HOST, or add tools/pb.config.json {"host":"…"}');
 }
 function die(msg) { console.error('error: ' + msg); process.exit(1); }
+function parseConfigValue(v) {
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  if (v !== '' && !Number.isNaN(Number(v))) return Number(v);
+  return v;
+}
 
 // ---------- CLI ----------
 try {
@@ -104,6 +114,29 @@ try {
     const maxBrightness = await new Pixelblaze(host).setMaxBrightness(pct);
     console.log(`brightness limit: ${maxBrightness}% (saved — this is the power-safety cap)`);
     if (maxBrightness === 100) console.log('warning: limit is 100% — the cap is not guarding anything at this setting.');
+  } else if (cmd === 'config') {
+    const host = resolveHost();
+    const cfg = await new Pixelblaze(host).getConfig();
+    if (flags.check) {
+      const problems = [];
+      if (cfg.colorOrder !== 'WRGB') problems.push(`colorOrder is ${cfg.colorOrder}, expected WRGB`);
+      if (cfg.pixelCount !== 170) problems.push(`pixelCount is ${cfg.pixelCount}, expected 170`);
+      if (problems.length) { for (const p of problems) console.error('drift: ' + p); die('config --check failed'); }
+      console.log('config check: ok (colorOrder=WRGB, pixelCount=170)');
+    } else {
+      for (const [k, v] of Object.entries(cfg)) console.log(`  ${k} = ${v}`);
+    }
+  } else if (cmd === 'set-config') {
+    const host = resolveHost();
+    const updates = {};
+    for (const kv of pos.slice(1)) {
+      const [k, v] = kv.split('=');
+      if (!k || v === undefined) die('usage: set-config key=value [key=value …]');
+      updates[k] = parseConfigValue(v);
+    }
+    if (!Object.keys(updates).length) die('usage: set-config key=value [key=value …]');
+    await new Pixelblaze(host).setConfig(updates);
+    console.log('set-config:', JSON.stringify(updates));
   } else if (cmd === 'compile' || cmd === 'run' || cmd === 'save') {
     const file = pos[1]; if (!file) die(`usage: ${cmd} <pattern.js> ${cmd === 'save' ? '[Name]' : ''}`);
     const host = resolveHost();
@@ -125,7 +158,7 @@ try {
       console.log(`ok — saved & activated (id ${res.id}; preview ${res.frames} frames, ${res.previewBytes} B).`);
     }
   } else {
-    console.log('commands: run | save | compile | set | list | activate | brightness | limit  (see header of this file)');
+    console.log('commands: run | save | compile | set | list | activate | brightness | limit | config | set-config  (see header of this file)');
     process.exit(cmd ? 1 : 0);
   }
 } catch (e) {
