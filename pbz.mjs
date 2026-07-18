@@ -34,6 +34,7 @@
     node tools/pbz.mjs delete <Name or id>                delete a saved pattern
     node tools/pbz.mjs export <Name or id> [file.epe]      fetch source + preview, write a .epe (defaults to "<Name>.epe")
     node tools/pbz.mjs import <file.epe>                  recompile a .epe's source locally and save + activate it
+    node tools/pbz.mjs info                               firmware/hardware, FPS, memory, uptime, storage, group/peers
 
   Notes:
     - `run` replaces the running program in place — great for fast iteration. It
@@ -87,6 +88,11 @@ function loadPowerConfig() {
 function printBudgetChain(links, binding) {
   for (const l of links) console.log(`  ${l === binding ? '>' : ' '} ${l.name}: ${l.amps} A`);
   console.log(`  binding link: ${binding.name} (${binding.amps} A)`);
+}
+function formatUptime(ms) {
+  if (ms == null) return 'unknown';
+  const h = Math.floor(ms / 3.6e6), m = Math.floor(ms / 6e4) % 60, s = Math.floor(ms / 1e3) % 60;
+  return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 function parseConfigValue(v) {
   if (v === 'true') return true;
@@ -186,6 +192,18 @@ try {
     if (!Object.keys(updates).length) die('usage: set-config key=value [key=value …]');
     await new Pixelblaze(host).setConfig(updates);
     console.log('set-config:', JSON.stringify(updates));
+  } else if (cmd === 'info') {
+    const host = resolveHost();
+    const info = await new Pixelblaze(host).getInfo();
+    console.log(`firmware: v${info.version} (${info.boardType}, chipId ${info.chipId})`);
+    console.log(`fps: ${info.fps?.toFixed(2) ?? 'unknown'}`);
+    console.log(`memory: ${info.mem ?? 'unknown'} free`);
+    console.log(`uptime: ${formatUptime(info.uptimeMs)}`);
+    if (info.storageSize) console.log(`storage: ${info.storageUsed} / ${info.storageSize} bytes (${(100 * info.storageUsed / info.storageSize).toFixed(0)}%)`);
+    const exp = [info.expansion.sensorBoard && 'SB 1.0', info.expansion.sixAxis && '6 Axis'].filter(Boolean);
+    console.log(`expansion: ${exp.length ? exp.join(' + ') : 'none'}`);
+    console.log(`group: ${info.groupRole} (node ${info.nodeId}${info.leaderId ? `, leader ${info.leaderId}` : ''})`);
+    console.log(`peers: ${info.peers.length}`);
   } else if (cmd === 'delete') {
     const host = resolveHost();
     const target = pos[1]; if (!target) die('usage: delete <Name or id>');
@@ -222,7 +240,7 @@ try {
       console.log(`ok — saved & activated (id ${res.id}; preview ${res.frames} frames, ${res.previewBytes} B).`);
     }
   } else {
-    console.log('commands: run | save | compile | set | list | activate | brightness | limit | power | config | set-config | delete | export | import  (see header of this file)');
+    console.log('commands: run | save | compile | set | list | activate | brightness | limit | power | config | set-config | delete | export | import | info  (see header of this file)');
     process.exit(cmd ? 1 : 0);
   }
 } catch (e) {

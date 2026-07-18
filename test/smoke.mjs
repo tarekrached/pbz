@@ -2,7 +2,7 @@
 // Read-only smoke sweep against the live device — run at the start of every
 // session, catches connection/parse breakage instantly (~2s, no mutation).
 // Only exercises commands that exist as of the current chunk; extend this
-// list as later chunks land (info/ping are Chunks 7/9).
+// list as later chunks land (ping/discover are Chunk 9).
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Pixelblaze } from '../lib/pixelblaze.mjs';
@@ -31,5 +31,9 @@ console.log(`ok (active: ${st.name})`);
 process.stdout.write(`smoke: config … `);
 const cfg = await pb.getConfig();
 console.log(`ok (colorOrder ${cfg.colorOrder}, pixelCount ${cfg.pixelCount})`);
+
+process.stdout.write(`smoke: info … `);
+const info = await pb.getInfo();
+console.log(`ok (v${info.version}, fps ${info.fps?.toFixed(1)}, group ${info.groupRole})`);
 
 console.log(`smoke sweep passed against ${host}`);
