@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
-  pbpush — compile, run, save, and tune Pixelblaze patterns from the command line.
+  pbz — compile, run, save, and tune Pixelblaze patterns from the command line.
 
   No npm install (needs Node >=22 for global fetch/WebSocket + zlib.crc32; the one
   vendored file, lib/jpeg-encoder.cjs, is committed pure JS for the preview thumbnail).
@@ -15,12 +15,12 @@
   loading preview images" and drops to /?min.
 
   Commands (host comes from --host=…, $PB_HOST, or tools/pb.config.json):
-    node tools/pbpush.mjs run     patterns/foo.js            compile + run live (NOT saved)
-    node tools/pbpush.mjs save    patterns/foo.js [Name]     compile + save to device + activate
-    node tools/pbpush.mjs compile patterns/foo.js            compile only (validate, show exports)
-    node tools/pbpush.mjs set     sliderSpeed=0.4 toggleRhythmSync=1   set controls on the active pattern
-    node tools/pbpush.mjs list                               list saved patterns (id + name)
-    node tools/pbpush.mjs activate <Name or id>              switch the active pattern
+    node tools/pbz.mjs run     patterns/foo.js            compile + run live (NOT saved)
+    node tools/pbz.mjs save    patterns/foo.js [Name]     compile + save to device + activate
+    node tools/pbz.mjs compile patterns/foo.js            compile only (validate, show exports)
+    node tools/pbz.mjs set     sliderSpeed=0.4 toggleRhythmSync=1   set controls on the active pattern
+    node tools/pbz.mjs list                               list saved patterns (id + name)
+    node tools/pbz.mjs activate <Name or id>              switch the active pattern
 
   Notes:
     - `run` replaces the running program in place — great for fast iteration. It

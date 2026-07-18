@@ -1,0 +1,15 @@
+{
+  "name": "pbz",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Headless, browser-free, Python-free Pixelblaze library + CLI (compiles patterns too).",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "pbz": "./pbz.mjs"
+  },
+  "exports": {
+    ".": "./lib/pixelblaze.mjs"
+  }
+}
