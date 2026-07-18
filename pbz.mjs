@@ -25,6 +25,8 @@
     node tools/pbz.mjs set     sliderSpeed=0.4 toggleRhythmSync=1   set controls on the active pattern
     node tools/pbz.mjs list                               list saved patterns (id + name)
     node tools/pbz.mjs activate <Name or id>              switch the active pattern
+    node tools/pbz.mjs brightness <0..1> [--save]         set global brightness (ephemeral unless --save)
+    node tools/pbz.mjs limit <0..100>                     set the firmware brightness CAP (persisted; the power-safety limit)
 
   Notes:
     - `run` replaces the running program in place — great for fast iteration. It
@@ -33,6 +35,8 @@
       same file updates the same entry instead of piling up duplicates.
     - Control names are the exported UI-function names (sliderSpeed, toggleTagHandoff, …),
       slider values are 0..1 and toggles are 0/1.
+    - `limit` is the load-bearing power-safety cap (see ../CLAUDE.md) — it clamps hardware
+      output regardless of pattern/slider. `brightness` is the ordinary dimmer.
 */
 
 import { readFile } from 'node:fs/promises';
@@ -88,6 +92,18 @@ try {
     const target = pos[1]; if (!target) die('usage: activate <Name or id>');
     const hit = await new Pixelblaze(host).activate(target);
     console.log(`activated: ${hit.name} (${hit.id})`);
+  } else if (cmd === 'brightness') {
+    const host = resolveHost();
+    const v = Number(pos[1]); if (Number.isNaN(v)) die('usage: brightness <0..1> [--save]');
+    const save = !!flags.save;
+    const brightness = await new Pixelblaze(host).setBrightness(v, { save });
+    console.log(`brightness: ${brightness}${save ? ' (saved)' : ' (live, not saved)'}`);
+  } else if (cmd === 'limit') {
+    const host = resolveHost();
+    const pct = Number(pos[1]); if (Number.isNaN(pct)) die('usage: limit <0..100>');
+    const maxBrightness = await new Pixelblaze(host).setMaxBrightness(pct);
+    console.log(`brightness limit: ${maxBrightness}% (saved — this is the power-safety cap)`);
+    if (maxBrightness === 100) console.log('warning: limit is 100% — the cap is not guarding anything at this setting.');
   } else if (cmd === 'compile' || cmd === 'run' || cmd === 'save') {
     const file = pos[1]; if (!file) die(`usage: ${cmd} <pattern.js> ${cmd === 'save' ? '[Name]' : ''}`);
     const host = resolveHost();
@@ -109,7 +125,7 @@ try {
       console.log(`ok — saved & activated (id ${res.id}; preview ${res.frames} frames, ${res.previewBytes} B).`);
     }
   } else {
-    console.log('commands: run | save | compile | set | list | activate  (see header of this file)');
+    console.log('commands: run | save | compile | set | list | activate | brightness | limit  (see header of this file)');
     process.exit(cmd ? 1 : 0);
   }
 } catch (e) {
