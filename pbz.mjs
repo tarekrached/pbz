@@ -27,6 +27,8 @@
     node tools/pbz.mjs activate <Name or id>              switch the active pattern
     node tools/pbz.mjs brightness <0..1> [--save]         set global brightness (ephemeral unless --save)
     node tools/pbz.mjs limit <0..100>                     set the firmware brightness CAP (persisted; the power-safety limit)
+    node tools/pbz.mjs limit --for-budget [--set]         derive the cap from tools/power.json (dry-run by default; --set persists)
+    node tools/pbz.mjs power budget                       print the PSU/breaker/wire/connector chain and which link binds
     node tools/pbz.mjs config [--check]                   print device/LED settings; --check asserts colorOrder=WRGB, pixelCount=170
     node tools/pbz.mjs set-config key=value […]           update device/LED settings (colorOrder, pixelCount, name, …)
     node tools/pbz.mjs delete <Name or id>                delete a saved pattern
@@ -42,6 +44,9 @@
       slider values are 0..1 and toggles are 0/1.
     - `limit` is the load-bearing power-safety cap (see ../CLAUDE.md) — it clamps hardware
       output regardless of pattern/slider. `brightness` is the ordinary dimmer.
+    - `limit --for-budget` derives that cap from tools/power.json (PSU/breaker/wire/connector
+      chain vs. measured all-four-max draw) instead of a hand-picked number — prints the
+      derivation and which link binds; add --set to actually write it.
     - `config --check` guards CLAUDE.md invariant #2 (WRGB color order) and the installed
       170-pixel ring — run it if the rig's behavior looks off before touching wiring.
     - `export`/`import` round-trip a pattern through a .epe file (same shape the web UI's
@@ -53,6 +58,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Pixelblaze } from './lib/pixelblaze.mjs';
 import { stableId, prettyName } from './lib/pbp.mjs';
+import { budgetChain, solveCapPercent } from './lib/power.mjs';
 
 // ---------- args & host resolution ----------
 const argv = process.argv.slice(2);
@@ -73,6 +79,15 @@ function resolveHost() {
   die('No host: pass --host=IP, set $PB_HOST, or add tools/pb.config.json {"host":"…"}');
 }
 function die(msg) { console.error('error: ' + msg); process.exit(1); }
+function loadPowerConfig() {
+  const p = path.join(import.meta.dirname, 'power.json');
+  if (!existsSync(p)) die('tools/power.json missing — needed for --for-budget / power budget');
+  return JSON.parse(readFileSync(p, 'utf8'));
+}
+function printBudgetChain(links, binding) {
+  for (const l of links) console.log(`  ${l === binding ? '>' : ' '} ${l.name}: ${l.amps} A`);
+  console.log(`  binding link: ${binding.name} (${binding.amps} A)`);
+}
 function parseConfigValue(v) {
   if (v === 'true') return true;
   if (v === 'false') return false;
@@ -114,11 +129,40 @@ try {
     const brightness = await new Pixelblaze(host).setBrightness(v, { save });
     console.log(`brightness: ${brightness}${save ? ' (saved)' : ' (live, not saved)'}`);
   } else if (cmd === 'limit') {
-    const host = resolveHost();
-    const pct = Number(pos[1]); if (Number.isNaN(pct)) die('usage: limit <0..100>');
-    const maxBrightness = await new Pixelblaze(host).setMaxBrightness(pct);
-    console.log(`brightness limit: ${maxBrightness}% (saved — this is the power-safety cap)`);
-    if (maxBrightness === 100) console.log('warning: limit is 100% — the cap is not guarding anything at this setting.');
+    if (flags['for-budget']) {
+      const power = loadPowerConfig();
+      const { pct, rawPct, links, binding, budgetAmps, allFourMaxAmps, margin } = solveCapPercent(power);
+      console.log('protection chain:');
+      printBudgetChain(links, binding);
+      console.log(`raw: ${budgetAmps} A / ${allFourMaxAmps} A (all-four-max) = ${rawPct.toFixed(1)}%`);
+      console.log(`cap (× ${margin} margin): ${pct}%`);
+      if (flags.set) {
+        const host = resolveHost();
+        const maxBrightness = await new Pixelblaze(host).setMaxBrightness(pct);
+        console.log(`brightness limit: ${maxBrightness}% (saved — for-budget derived, power-safety cap)`);
+      } else {
+        console.log('(dry run — pass --set to write this to the device)');
+      }
+    } else {
+      const host = resolveHost();
+      const pct = Number(pos[1]); if (Number.isNaN(pct)) die('usage: limit <0..100> | limit --for-budget [--set]');
+      const maxBrightness = await new Pixelblaze(host).setMaxBrightness(pct);
+      console.log(`brightness limit: ${maxBrightness}% (saved — this is the power-safety cap)`);
+      if (maxBrightness === 100) console.log('warning: limit is 100% — the cap is not guarding anything at this setting.');
+    }
+  } else if (cmd === 'power') {
+    const sub = pos[1];
+    if (sub === 'budget') {
+      const power = loadPowerConfig();
+      const { pct, rawPct, links, binding, budgetAmps, allFourMaxAmps, margin } = solveCapPercent(power);
+      console.log('protection chain:');
+      printBudgetChain(links, binding);
+      console.log(`measured all-four-max: ${allFourMaxAmps} A (${power.measured.all_four_max_watts} W)`);
+      console.log(`measured W-only white: ${power.measured.w_only_white_amps} A (${power.measured.w_only_white_watts} W)`);
+      console.log(`raw budget/all-four-max: ${rawPct.toFixed(1)}%  ->  cap × ${margin} margin: ${pct}%  (pbz limit --for-budget --set to apply)`);
+    } else {
+      die('usage: power budget');
+    }
   } else if (cmd === 'config') {
     const host = resolveHost();
     const cfg = await new Pixelblaze(host).getConfig();
@@ -178,7 +222,7 @@ try {
       console.log(`ok — saved & activated (id ${res.id}; preview ${res.frames} frames, ${res.previewBytes} B).`);
     }
   } else {
-    console.log('commands: run | save | compile | set | list | activate | brightness | limit | config | set-config | delete | export | import  (see header of this file)');
+    console.log('commands: run | save | compile | set | list | activate | brightness | limit | power | config | set-config | delete | export | import  (see header of this file)');
     process.exit(cmd ? 1 : 0);
   }
 } catch (e) {
