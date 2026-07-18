@@ -29,6 +29,9 @@
     node tools/pbz.mjs limit <0..100>                     set the firmware brightness CAP (persisted; the power-safety limit)
     node tools/pbz.mjs config [--check]                   print device/LED settings; --check asserts colorOrder=WRGB, pixelCount=170
     node tools/pbz.mjs set-config key=value […]           update device/LED settings (colorOrder, pixelCount, name, …)
+    node tools/pbz.mjs delete <Name or id>                delete a saved pattern
+    node tools/pbz.mjs export <Name or id> [file.epe]      fetch source + preview, write a .epe (defaults to "<Name>.epe")
+    node tools/pbz.mjs import <file.epe>                  recompile a .epe's source locally and save + activate it
 
   Notes:
     - `run` replaces the running program in place — great for fast iteration. It
@@ -41,6 +44,8 @@
       output regardless of pattern/slider. `brightness` is the ordinary dimmer.
     - `config --check` guards CLAUDE.md invariant #2 (WRGB color order) and the installed
       170-pixel ring — run it if the rig's behavior looks off before touching wiring.
+    - `export`/`import` round-trip a pattern through a .epe file (same shape the web UI's
+      Export button writes) — a backup/portability path independent of the device's flash.
 */
 
 import { readFile } from 'node:fs/promises';
@@ -137,6 +142,21 @@ try {
     if (!Object.keys(updates).length) die('usage: set-config key=value [key=value …]');
     await new Pixelblaze(host).setConfig(updates);
     console.log('set-config:', JSON.stringify(updates));
+  } else if (cmd === 'delete') {
+    const host = resolveHost();
+    const target = pos[1]; if (!target) die('usage: delete <Name or id>');
+    const hit = await new Pixelblaze(host).delete(target);
+    console.log(`deleted: ${hit.name} (${hit.id})`);
+  } else if (cmd === 'export') {
+    const host = resolveHost();
+    const target = pos[1]; if (!target) die('usage: export <Name or id> [file.epe]');
+    const res = await new Pixelblaze(host).export(target, pos[2]);
+    console.log(`exported: ${res.file}`);
+  } else if (cmd === 'import') {
+    const host = resolveHost();
+    const file = pos[1]; if (!file) die('usage: import <file.epe>');
+    const res = await new Pixelblaze(host).import(file);
+    console.log(`imported: ${res.id} (saved & activated)`);
   } else if (cmd === 'compile' || cmd === 'run' || cmd === 'save') {
     const file = pos[1]; if (!file) die(`usage: ${cmd} <pattern.js> ${cmd === 'save' ? '[Name]' : ''}`);
     const host = resolveHost();
@@ -158,7 +178,7 @@ try {
       console.log(`ok — saved & activated (id ${res.id}; preview ${res.frames} frames, ${res.previewBytes} B).`);
     }
   } else {
-    console.log('commands: run | save | compile | set | list | activate | brightness | limit | config | set-config  (see header of this file)');
+    console.log('commands: run | save | compile | set | list | activate | brightness | limit | config | set-config | delete | export | import  (see header of this file)');
     process.exit(cmd ? 1 : 0);
   }
 } catch (e) {
