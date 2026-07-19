@@ -33,6 +33,8 @@
     node tools/pbz.mjs limit <0..100>                     set the firmware brightness CAP (persisted; the power-safety limit)
     node tools/pbz.mjs limit --for-budget [--set]         derive the cap from tools/power.json (dry-run by default; --set persists)
     node tools/pbz.mjs power budget                       print the PSU/breaker/wire/connector chain and which link binds
+    node tools/pbz.mjs power                              estimate the ACTIVE pattern's real draw (peak/mean, W-extraction modeled)
+    node tools/pbz.mjs power patterns/foo.js               same, for a candidate pattern (runs it live first, like `run`)
     node tools/pbz.mjs config [--check]                   print device/LED settings; --check asserts colorOrder=WRGB, pixelCount=170
     node tools/pbz.mjs set-config key=value […]           update device/LED settings (colorOrder, pixelCount, name, …)
     node tools/pbz.mjs delete <Name or id>                delete a saved pattern
@@ -61,6 +63,12 @@
     - `limit --for-budget` derives that cap from tools/power.json (PSU/breaker/wire/connector
       chain vs. measured all-four-max draw) instead of a hand-picked number — prints the
       derivation and which link binds; add --set to actually write it.
+    - `power` (no arg / a candidate file) estimates REAL draw from sampled preview frames —
+      advisory, not the safety backstop (that's `limit` + the physical fuse/breaker). Preview
+      frames are pre-brightness and pre-W-extraction (verified live), so pbz applies the
+      device's actual brightness x maxBrightness scale and models min(r,g,b) routing to the W
+      element itself — a naive R+G+B sum on a white pixel would overestimate its draw ~3x.
+      `save` prints the same peak estimate automatically using the thumbnail-capture frames.
     - `config --check` guards CLAUDE.md invariant #2 (WRGB color order) and the installed
       170-pixel ring — run it if the rig's behavior looks off before touching wiring.
     - `export`/`import` round-trip a pattern through a .epe file (same shape the web UI's
@@ -80,7 +88,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Pixelblaze } from './lib/pixelblaze.mjs';
 import { stableId, prettyName } from './lib/pbp.mjs';
-import { budgetChain, solveCapPercent } from './lib/power.mjs';
+import { budgetChain, solveCapPercent, estimateDraw } from './lib/power.mjs';
 
 // ---------- args & host resolution ----------
 const argv = process.argv.slice(2);
@@ -109,6 +117,17 @@ function loadPowerConfig() {
 function printBudgetChain(links, binding) {
   for (const l of links) console.log(`  ${l === binding ? '>' : ' '} ${l.name}: ${l.amps} A`);
   console.log(`  binding link: ${binding.name} (${binding.amps} A)`);
+}
+// Preview frames are pre-brightness (verified live, Chunk 12) — the actual
+// scale driven to the LEDs is the ordinary dimmer times the firmware cap.
+async function effectiveBrightnessFactor(pb) {
+  const cfg = await pb.getConfig();
+  return cfg.brightness * (cfg.maxBrightness / 100);
+}
+function printPowerEstimate(est, power, label) {
+  console.log(`estimated draw (${label}): peak ${est.peakAmps.toFixed(2)} A / ${est.peakWatts.toFixed(0)} W, mean ${est.meanAmps.toFixed(2)} A / ${est.meanWatts.toFixed(0)} W`);
+  console.log(`  vs binding link (${est.bindingLink}, ${est.budgetAmps} A): peak ${est.peakPctOfBudget.toFixed(0)}%, mean ${est.meanPctOfBudget.toFixed(0)}%`);
+  console.log('  (advisory — the brightness cap and physical fuse/breaker are the real safety backstop, not this estimate)');
 }
 function formatUptime(ms) {
   if (ms == null) return 'unknown';
@@ -188,7 +207,21 @@ try {
       console.log(`measured W-only white: ${power.measured.w_only_white_amps} A (${power.measured.w_only_white_watts} W)`);
       console.log(`raw budget/all-four-max: ${rawPct.toFixed(1)}%  ->  cap × ${margin} margin: ${pct}%  (pbz limit --for-budget --set to apply)`);
     } else {
-      die('usage: power budget');
+      const host = resolveHost();
+      const power = loadPowerConfig();
+      const pb = new Pixelblaze(host);
+      if (sub) {
+        // Candidate pattern: compile + run live (ephemeral, like `run`), then sample it.
+        const source = await readFile(sub, 'utf8');
+        process.stdout.write(`Compiling + running ${sub} live … `);
+        await pb.run(source);
+        console.log('ok (live, not saved).');
+      }
+      const factor = await effectiveBrightnessFactor(pb);
+      process.stdout.write('Sampling preview frames … ');
+      const frames = await pb.samplePreview(30);
+      console.log(`ok (${frames.length}).`);
+      printPowerEstimate(estimateDraw(frames, power, factor), power, sub ? `candidate ${sub}` : 'active pattern');
     }
   } else if (cmd === 'config') {
     const host = resolveHost();
@@ -329,6 +362,12 @@ try {
       process.stdout.write(`Saving "${name}" to ${host} … `);
       const res = await pb.save(source, name, { id });
       console.log(`ok — saved & activated (id ${res.id}; preview ${res.frames} frames, ${res.previewBytes} B).`);
+      const powerPath = path.join(import.meta.dirname, 'power.json');
+      if (existsSync(powerPath) && res.rawFrames.length) {
+        const power = JSON.parse(readFileSync(powerPath, 'utf8'));
+        const est = estimateDraw(res.rawFrames, power, await effectiveBrightnessFactor(pb));
+        console.log(`  peak est. ${est.peakAmps.toFixed(1)} A / ${est.peakWatts.toFixed(0)} W = ${est.peakPctOfBudget.toFixed(0)}% of budget (${est.bindingLink}, ${est.budgetAmps} A)`);
+      }
     }
   } else {
     console.log('commands: run | save | compile | set | setvars | seq | playlist | list | activate | brightness | limit | power | config | set-config | delete | export | import | info | map | reboot | ping | discover  (see header of this file)');
