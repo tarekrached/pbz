@@ -23,6 +23,7 @@
     node tools/pbz.mjs save    patterns/foo.js [Name]     compile + save to device + activate
     node tools/pbz.mjs compile patterns/foo.js            compile only (validate, show exports)
     node tools/pbz.mjs set     sliderSpeed=0.4 toggleRhythmSync=1   set controls on the active pattern
+    node tools/pbz.mjs setvars myVar=3 phase=0.25         set exported pattern variables (not UI controls) on the active pattern
     node tools/pbz.mjs list                               list saved patterns (id + name)
     node tools/pbz.mjs activate <Name or id>              switch the active pattern
     node tools/pbz.mjs brightness <0..1> [--save]         set global brightness (ephemeral unless --save)
@@ -45,6 +46,8 @@
       same file updates the same entry instead of piling up duplicates.
     - Control names are the exported UI-function names (sliderSpeed, toggleTagHandoff, …),
       slider values are 0..1 and toggles are 0/1.
+    - `setvars` pokes exported pattern *variables* directly (whatever the running pattern
+      declares with `export var`) — distinct from `set`, which drives UI controls.
     - `limit` is the load-bearing power-safety cap (see ../CLAUDE.md) — it clamps hardware
       output regardless of pattern/slider. `brightness` is the ordinary dimmer.
     - `limit --for-budget` derives that cap from tools/power.json (PSU/breaker/wire/connector
@@ -188,6 +191,13 @@ try {
     } else {
       for (const [k, v] of Object.entries(cfg)) console.log(`  ${k} = ${v}`);
     }
+  } else if (cmd === 'setvars') {
+    const host = resolveHost();
+    const vars = {};
+    for (const kv of pos.slice(1)) { const [k, v] = kv.split('='); if (!k || v === undefined) die('usage: setvars name=value [name=value …]'); vars[k] = parseConfigValue(v); }
+    if (!Object.keys(vars).length) die('usage: setvars name=value [name=value …]');
+    await new Pixelblaze(host).setVars(vars);
+    console.log('setvars:', JSON.stringify(vars));
   } else if (cmd === 'set-config') {
     const host = resolveHost();
     const updates = {};
@@ -266,7 +276,7 @@ try {
       console.log(`ok — saved & activated (id ${res.id}; preview ${res.frames} frames, ${res.previewBytes} B).`);
     }
   } else {
-    console.log('commands: run | save | compile | set | list | activate | brightness | limit | power | config | set-config | delete | export | import | info | map  (see header of this file)');
+    console.log('commands: run | save | compile | set | setvars | list | activate | brightness | limit | power | config | set-config | delete | export | import | info | map  (see header of this file)');
     process.exit(cmd ? 1 : 0);
   }
 } catch (e) {

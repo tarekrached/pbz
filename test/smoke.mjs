@@ -28,6 +28,10 @@ process.stdout.write(`smoke: get … `);
 const st = await pb.getState();
 console.log(`ok (active: ${st.name})`);
 
+process.stdout.write(`smoke: getVars … `);
+const vars = await pb.getVars();
+console.log(`ok (${Object.keys(vars).length} vars)`);
+
 process.stdout.write(`smoke: config … `);
 const cfg = await pb.getConfig();
 console.log(`ok (colorOrder ${cfg.colorOrder}, pixelCount ${cfg.pixelCount})`);
