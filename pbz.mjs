@@ -24,6 +24,9 @@
     node tools/pbz.mjs compile patterns/foo.js            compile only (validate, show exports)
     node tools/pbz.mjs set     sliderSpeed=0.4 toggleRhythmSync=1   set controls on the active pattern
     node tools/pbz.mjs setvars myVar=3 phase=0.25         set exported pattern variables (not UI controls) on the active pattern
+    node tools/pbz.mjs seq off|shuffle|playlist           set the sequencer mode
+    node tools/pbz.mjs playlist                           show the shared playlist (position + items)
+    node tools/pbz.mjs playlist set <Name or id>:<ms> […] replace the playlist's items
     node tools/pbz.mjs list                               list saved patterns (id + name)
     node tools/pbz.mjs activate <Name or id>              switch the active pattern
     node tools/pbz.mjs brightness <0..1> [--save]         set global brightness (ephemeral unless --save)
@@ -48,6 +51,8 @@
       slider values are 0..1 and toggles are 0/1.
     - `setvars` pokes exported pattern *variables* directly (whatever the running pattern
       declares with `export var`) — distinct from `set`, which drives UI controls.
+    - `seq`/`playlist` drive the device's single shared playlist (`_defaultplaylist_`); items
+      are `<Name or id>:<ms>` — the same name/id resolution `activate`/`delete` use.
     - `limit` is the load-bearing power-safety cap (see ../CLAUDE.md) — it clamps hardware
       output regardless of pattern/slider. `brightness` is the ordinary dimmer.
     - `limit --for-budget` derives that cap from tools/power.json (PSU/breaker/wire/connector
@@ -191,6 +196,36 @@ try {
     } else {
       for (const [k, v] of Object.entries(cfg)) console.log(`  ${k} = ${v}`);
     }
+  } else if (cmd === 'seq') {
+    const host = resolveHost();
+    const modes = { off: 0, shuffle: 1, playlist: 2 };
+    const mode = modes[pos[1]];
+    if (mode === undefined) die('usage: seq off|shuffle|playlist');
+    await new Pixelblaze(host).setSequencerMode(mode);
+    console.log(`sequencer mode: ${pos[1]} (${mode})`);
+  } else if (cmd === 'playlist') {
+    const host = resolveHost();
+    const pb = new Pixelblaze(host);
+    if (pos[1] === 'set') {
+      const tokens = pos.slice(2);
+      if (!tokens.length) die('usage: playlist set <Name or id>:<ms> […]');
+      const items = [];
+      for (const tok of tokens) {
+        const i = tok.lastIndexOf(':');
+        if (i < 0) die(`usage: playlist set <Name or id>:<ms> […] (bad token "${tok}")`);
+        const target = tok.slice(0, i), ms = Number(tok.slice(i + 1));
+        if (Number.isNaN(ms)) die(`bad ms in "${tok}"`);
+        const hit = await pb._resolveTarget(target);
+        items.push({ id: hit.id, ms });
+      }
+      await pb.setPlaylist(items);
+      console.log(`playlist set: ${items.length} items (saved)`);
+    } else {
+      const [{ items, position }, rows] = await Promise.all([pb.getPlaylist(), pb.list()]);
+      const nameOf = (id) => rows.find(r => r.id === id)?.name || 'Unknown';
+      items.forEach((it, i) => console.log(`${i === position ? '>' : ' '} ${nameOf(it.id)} (${it.id}) — ${it.ms} ms`));
+      console.log(`(${items.length} items)`);
+    }
   } else if (cmd === 'setvars') {
     const host = resolveHost();
     const vars = {};
@@ -276,7 +311,7 @@ try {
       console.log(`ok — saved & activated (id ${res.id}; preview ${res.frames} frames, ${res.previewBytes} B).`);
     }
   } else {
-    console.log('commands: run | save | compile | set | setvars | list | activate | brightness | limit | power | config | set-config | delete | export | import | info | map  (see header of this file)');
+    console.log('commands: run | save | compile | set | setvars | seq | playlist | list | activate | brightness | limit | power | config | set-config | delete | export | import | info | map  (see header of this file)');
     process.exit(cmd ? 1 : 0);
   }
 } catch (e) {

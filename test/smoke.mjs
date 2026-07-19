@@ -48,6 +48,10 @@ process.stdout.write(`smoke: info … `);
 const info = await pb.getInfo();
 console.log(`ok (v${info.ver}, fps ${info.fps?.toFixed(1)}, group ${info.groupRole})`);
 
+process.stdout.write(`smoke: playlist … `);
+const pl = await pb.getPlaylist();
+console.log(`ok (${pl.items.length} items, position ${pl.position})`);
+
 process.stdout.write(`smoke: map get … `);
 const mapSource = await pb.getMap();
 const coords = await pb.getMap({ coords: true });
