@@ -62,3 +62,4 @@ const ms = await pb.ping();
 console.log(`ok (${ms} ms)`);
 
 console.log(`smoke sweep passed against ${host}`);
+pb.close();

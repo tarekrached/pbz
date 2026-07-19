@@ -108,7 +108,7 @@ function resolveHost() {
   }
   die('No host: pass --host=IP, set $PB_HOST, or add tools/pb.config.json {"host":"…"}');
 }
-function die(msg) { console.error('error: ' + msg); process.exit(1); }
+function die(msg) { console.error('error: ' + msg); for (const pb of instances) pb.close(); process.exit(1); }
 function loadPowerConfig() {
   const p = path.join(import.meta.dirname, 'power.json');
   if (!existsSync(p)) die('tools/power.json missing — needed for --for-budget / power budget');
@@ -134,6 +134,11 @@ function formatUptime(ms) {
   const h = Math.floor(ms / 3.6e6), m = Math.floor(ms / 6e4) % 60, s = Math.floor(ms / 1e3) % 60;
   return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
+// Track every Pixelblaze instance the command creates so its (now shared,
+// reused-across-calls — PBZ-PLAN.md Chunk 20) connection can be closed once
+// the command is done; otherwise the open socket would keep the process alive.
+const instances = [];
+function mkPixelblaze(host) { const pb = new Pixelblaze(host); instances.push(pb); return pb; }
 function parseConfigValue(v) {
   if (v === 'true') return true;
   if (v === 'false') return false;
@@ -145,12 +150,12 @@ function parseConfigValue(v) {
 try {
   if (cmd === 'list') {
     const host = resolveHost();
-    const rows = await new Pixelblaze(host).list();
+    const rows = await mkPixelblaze(host).list();
     for (const r of rows) console.log(`${r.id}  ${r.name}`);
     console.log(`(${rows.length} patterns on ${host})`);
   } else if (cmd === 'get') {
     const host = resolveHost();
-    const st = await new Pixelblaze(host).getState();
+    const st = await mkPixelblaze(host).getState();
     console.log(`active: ${st.name} (${st.id})`);
     console.log('vars (current values):');
     for (const [k, v] of Object.entries(st.vars)) console.log(`  ${k} = ${v}`);
@@ -161,18 +166,18 @@ try {
     const controls = {};
     for (const kv of pos.slice(1)) { const [k, v] = kv.split('='); controls[k] = Number(v); }
     if (!Object.keys(controls).length) die('usage: set name=value [name=value …]');
-    await new Pixelblaze(host).setControls(controls);
+    await mkPixelblaze(host).setControls(controls);
     console.log('set:', JSON.stringify(controls));
   } else if (cmd === 'activate') {
     const host = resolveHost();
     const target = pos[1]; if (!target) die('usage: activate <Name or id>');
-    const hit = await new Pixelblaze(host).activate(target);
+    const hit = await mkPixelblaze(host).activate(target);
     console.log(`activated: ${hit.name} (${hit.id})`);
   } else if (cmd === 'brightness') {
     const host = resolveHost();
     const v = Number(pos[1]); if (Number.isNaN(v)) die('usage: brightness <0..1> [--save]');
     const save = !!flags.save;
-    const brightness = await new Pixelblaze(host).setBrightness(v, { save });
+    const brightness = await mkPixelblaze(host).setBrightness(v, { save });
     console.log(`brightness: ${brightness}${save ? ' (saved)' : ' (live, not saved)'}`);
   } else if (cmd === 'limit') {
     if (flags['for-budget']) {
@@ -184,7 +189,7 @@ try {
       console.log(`cap (× ${margin} margin): ${pct}%`);
       if (flags.set) {
         const host = resolveHost();
-        const maxBrightness = await new Pixelblaze(host).setMaxBrightness(pct);
+        const maxBrightness = await mkPixelblaze(host).setMaxBrightness(pct);
         console.log(`brightness limit: ${maxBrightness}% (saved — for-budget derived, power-safety cap)`);
       } else {
         console.log('(dry run — pass --set to write this to the device)');
@@ -192,7 +197,7 @@ try {
     } else {
       const host = resolveHost();
       const pct = Number(pos[1]); if (Number.isNaN(pct)) die('usage: limit <0..100> | limit --for-budget [--set]');
-      const maxBrightness = await new Pixelblaze(host).setMaxBrightness(pct);
+      const maxBrightness = await mkPixelblaze(host).setMaxBrightness(pct);
       console.log(`brightness limit: ${maxBrightness}% (saved — this is the power-safety cap)`);
       if (maxBrightness === 100) console.log('warning: limit is 100% — the cap is not guarding anything at this setting.');
     }
@@ -209,7 +214,7 @@ try {
     } else {
       const host = resolveHost();
       const power = loadPowerConfig();
-      const pb = new Pixelblaze(host);
+      const pb = mkPixelblaze(host);
       if (sub) {
         // Candidate pattern: compile + run live (ephemeral, like `run`), then sample it.
         const source = await readFile(sub, 'utf8');
@@ -225,7 +230,7 @@ try {
     }
   } else if (cmd === 'config') {
     const host = resolveHost();
-    const cfg = await new Pixelblaze(host).getConfig();
+    const cfg = await mkPixelblaze(host).getConfig();
     if (flags.check) {
       const problems = [];
       if (cfg.colorOrder !== 'WRGB') problems.push(`colorOrder is ${cfg.colorOrder}, expected WRGB`);
@@ -240,11 +245,11 @@ try {
     const modes = { off: 0, shuffle: 1, playlist: 2 };
     const mode = modes[pos[1]];
     if (mode === undefined) die('usage: seq off|shuffle|playlist');
-    await new Pixelblaze(host).setSequencerMode(mode);
+    await mkPixelblaze(host).setSequencerMode(mode);
     console.log(`sequencer mode: ${pos[1]} (${mode})`);
   } else if (cmd === 'playlist') {
     const host = resolveHost();
-    const pb = new Pixelblaze(host);
+    const pb = mkPixelblaze(host);
     if (pos[1] === 'set') {
       const tokens = pos.slice(2);
       if (!tokens.length) die('usage: playlist set <Name or id>:<ms> […]');
@@ -270,7 +275,7 @@ try {
     const vars = {};
     for (const kv of pos.slice(1)) { const [k, v] = kv.split('='); if (!k || v === undefined) die('usage: setvars name=value [name=value …]'); vars[k] = parseConfigValue(v); }
     if (!Object.keys(vars).length) die('usage: setvars name=value [name=value …]');
-    await new Pixelblaze(host).setVars(vars);
+    await mkPixelblaze(host).setVars(vars);
     console.log('setvars:', JSON.stringify(vars));
   } else if (cmd === 'set-config') {
     const host = resolveHost();
@@ -281,11 +286,11 @@ try {
       updates[k] = parseConfigValue(v);
     }
     if (!Object.keys(updates).length) die('usage: set-config key=value [key=value …]');
-    await new Pixelblaze(host).setConfig(updates);
+    await mkPixelblaze(host).setConfig(updates);
     console.log('set-config:', JSON.stringify(updates));
   } else if (cmd === 'info') {
     const host = resolveHost();
-    const info = await new Pixelblaze(host).getInfo();
+    const info = await mkPixelblaze(host).getInfo();
     console.log(`firmware: v${info.ver} (${info.boardType}, chipId ${info.chipId})`);
     console.log(`fps: ${info.fps?.toFixed(2) ?? 'unknown'}`);
     console.log(`memory: ${info.mem ?? 'unknown'} free`);
@@ -299,7 +304,7 @@ try {
     const host = resolveHost();
     const sub = pos[1];
     if (sub === 'get') {
-      const pb = new Pixelblaze(host);
+      const pb = mkPixelblaze(host);
       if (flags.coords) {
         const coords = await pb.getMap({ coords: true });
         console.log(JSON.stringify(coords));
@@ -309,18 +314,18 @@ try {
     } else if (sub === 'set') {
       const file = pos[2]; if (!file) die('usage: map set <file>');
       const text = await readFile(file, 'utf8');
-      const res = await new Pixelblaze(host).setMap(text);
+      const res = await mkPixelblaze(host).setMap(text);
       console.log(`map set: ${res.pixelCount} pixels, ${res.dimensions}D (live geometry updated; source saved to Mapper tab)`);
     } else {
       die('usage: map get [--coords] | map set <file>');
     }
   } else if (cmd === 'reboot') {
     const host = resolveHost();
-    await new Pixelblaze(host).reboot();
+    await mkPixelblaze(host).reboot();
     console.log(`reboot: sent to ${host}`);
   } else if (cmd === 'ping') {
     const host = resolveHost();
-    const ms = await new Pixelblaze(host).ping();
+    const ms = await mkPixelblaze(host).ping();
     console.log(`ping: ${ms} ms`);
   } else if (cmd === 'discover') {
     const ms = flags.ms ? Number(flags.ms) : 3000;
@@ -331,23 +336,23 @@ try {
   } else if (cmd === 'delete') {
     const host = resolveHost();
     const target = pos[1]; if (!target) die('usage: delete <Name or id>');
-    const hit = await new Pixelblaze(host).delete(target);
+    const hit = await mkPixelblaze(host).delete(target);
     console.log(`deleted: ${hit.name} (${hit.id})`);
   } else if (cmd === 'export') {
     const host = resolveHost();
     const target = pos[1]; if (!target) die('usage: export <Name or id> [file.epe]');
-    const res = await new Pixelblaze(host).export(target, pos[2]);
+    const res = await mkPixelblaze(host).export(target, pos[2]);
     console.log(`exported: ${res.file}`);
   } else if (cmd === 'import') {
     const host = resolveHost();
     const file = pos[1]; if (!file) die('usage: import <file.epe>');
-    const res = await new Pixelblaze(host).import(file);
+    const res = await mkPixelblaze(host).import(file);
     console.log(`imported: ${res.id} (saved & activated)`);
   } else if (cmd === 'compile' || cmd === 'run' || cmd === 'save') {
     const file = pos[1]; if (!file) die(`usage: ${cmd} <pattern.js> ${cmd === 'save' ? '[Name]' : ''}`);
     const host = resolveHost();
     const source = await readFile(file, 'utf8');
-    const pb = new Pixelblaze(host);
+    const pb = mkPixelblaze(host);
     process.stdout.write(`Fetching compiler from ${host} … `);
     await pb.loadTooling();
     console.log('ok');
@@ -373,6 +378,10 @@ try {
     console.log('commands: run | save | compile | set | setvars | seq | playlist | list | activate | brightness | limit | power | config | set-config | delete | export | import | info | map | reboot | ping | discover  (see header of this file)');
     process.exit(cmd ? 1 : 0);
   }
+  // Each command's Pixelblaze instance(s) now share one reused connection
+  // (PBZ-PLAN.md Chunk 20) instead of closing per method call — close it here
+  // so the process exits promptly instead of hanging on an open socket.
+  for (const pb of instances) pb.close();
 } catch (e) {
   die(e.message);
 }
