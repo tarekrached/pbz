@@ -32,8 +32,16 @@ process.stdout.write(`smoke: config … `);
 const cfg = await pb.getConfig();
 console.log(`ok (colorOrder ${cfg.colorOrder}, pixelCount ${cfg.pixelCount})`);
 
+process.stdout.write(`smoke: status … `);
+const status = await pb.getStatus();
+console.log(`ok (fps ${status.fps?.toFixed(1)}, mem ${status.mem})`);
+
+process.stdout.write(`smoke: peers … `);
+const peers = await pb.getPeers();
+console.log(`ok (${peers.length} peers)`);
+
 process.stdout.write(`smoke: info … `);
 const info = await pb.getInfo();
-console.log(`ok (v${info.version}, fps ${info.fps?.toFixed(1)}, group ${info.groupRole})`);
+console.log(`ok (v${info.ver}, fps ${info.fps?.toFixed(1)}, group ${info.groupRole})`);
 
 console.log(`smoke sweep passed against ${host}`);

@@ -195,10 +195,10 @@ try {
   } else if (cmd === 'info') {
     const host = resolveHost();
     const info = await new Pixelblaze(host).getInfo();
-    console.log(`firmware: v${info.version} (${info.boardType}, chipId ${info.chipId})`);
+    console.log(`firmware: v${info.ver} (${info.boardType}, chipId ${info.chipId})`);
     console.log(`fps: ${info.fps?.toFixed(2) ?? 'unknown'}`);
     console.log(`memory: ${info.mem ?? 'unknown'} free`);
-    console.log(`uptime: ${formatUptime(info.uptimeMs)}`);
+    console.log(`uptime: ${formatUptime(info.uptime)}`);
     if (info.storageSize) console.log(`storage: ${info.storageUsed} / ${info.storageSize} bytes (${(100 * info.storageUsed / info.storageSize).toFixed(0)}%)`);
     const exp = [info.expansion.sensorBoard && 'SB 1.0', info.expansion.sixAxis && '6 Axis'].filter(Boolean);
     console.log(`expansion: ${exp.length ? exp.join(' + ') : 'none'}`);
