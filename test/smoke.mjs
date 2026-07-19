@@ -44,4 +44,9 @@ process.stdout.write(`smoke: info … `);
 const info = await pb.getInfo();
 console.log(`ok (v${info.ver}, fps ${info.fps?.toFixed(1)}, group ${info.groupRole})`);
 
+process.stdout.write(`smoke: map get … `);
+const mapSource = await pb.getMap();
+const coords = await pb.getMap({ coords: true });
+console.log(`ok (${mapSource.length} chars source, ${coords.length} coords)`);
+
 console.log(`smoke sweep passed against ${host}`);

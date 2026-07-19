@@ -35,6 +35,8 @@
     node tools/pbz.mjs export <Name or id> [file.epe]      fetch source + preview, write a .epe (defaults to "<Name>.epe")
     node tools/pbz.mjs import <file.epe>                  recompile a .epe's source locally and save + activate it
     node tools/pbz.mjs info                               firmware/hardware, FPS, memory, uptime, storage, group/peers
+    node tools/pbz.mjs map get [--coords] > map.js        fetch the pixel-map source (or --coords for the normalized render coords)
+    node tools/pbz.mjs map set map.js                     compute + push the live render geometry AND persist the source
 
   Notes:
     - `run` replaces the running program in place — great for fast iteration. It
@@ -52,6 +54,11 @@
       170-pixel ring — run it if the rig's behavior looks off before touching wiring.
     - `export`/`import` round-trip a pattern through a .epe file (same shape the web UI's
       Export button writes) — a backup/portability path independent of the device's flash.
+    - The device can't evaluate the map JS itself (same reason it can't compile patterns) —
+      `map set` computes the render geometry headless and pushes it live, THEN persists the
+      source, so the Mapper tab and the actual rendering never drift apart. `map get --coords`
+      shows the live normalized geometry (via the same compute path) — the way to check the
+      device matches a committed map.js.
 */
 
 import { readFile } from 'node:fs/promises';
@@ -204,6 +211,25 @@ try {
     console.log(`expansion: ${exp.length ? exp.join(' + ') : 'none'}`);
     console.log(`group: ${info.groupRole} (node ${info.nodeId}${info.leaderId ? `, leader ${info.leaderId}` : ''})`);
     console.log(`peers: ${info.peers.length}`);
+  } else if (cmd === 'map') {
+    const host = resolveHost();
+    const sub = pos[1];
+    if (sub === 'get') {
+      const pb = new Pixelblaze(host);
+      if (flags.coords) {
+        const coords = await pb.getMap({ coords: true });
+        console.log(JSON.stringify(coords));
+      } else {
+        process.stdout.write(await pb.getMap());
+      }
+    } else if (sub === 'set') {
+      const file = pos[2]; if (!file) die('usage: map set <file>');
+      const text = await readFile(file, 'utf8');
+      const res = await new Pixelblaze(host).setMap(text);
+      console.log(`map set: ${res.pixelCount} pixels, ${res.dimensions}D (live geometry updated; source saved to Mapper tab)`);
+    } else {
+      die('usage: map get [--coords] | map set <file>');
+    }
   } else if (cmd === 'delete') {
     const host = resolveHost();
     const target = pos[1]; if (!target) die('usage: delete <Name or id>');
@@ -240,7 +266,7 @@ try {
       console.log(`ok — saved & activated (id ${res.id}; preview ${res.frames} frames, ${res.previewBytes} B).`);
     }
   } else {
-    console.log('commands: run | save | compile | set | list | activate | brightness | limit | power | config | set-config | delete | export | import | info  (see header of this file)');
+    console.log('commands: run | save | compile | set | list | activate | brightness | limit | power | config | set-config | delete | export | import | info | map  (see header of this file)');
     process.exit(cmd ? 1 : 0);
   }
 } catch (e) {
