@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Read-only smoke sweep against the live device — run at the start of every
 // session, catches connection/parse breakage instantly (~2s, no mutation).
-// Only exercises commands that exist as of the current chunk; extend this
-// list as later chunks land (ping/discover are Chunk 9).
+// discover isn't included: it's a multi-second UDP listen, a poor fit for a
+// fast sweep, and doesn't touch the target host at all.
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Pixelblaze } from '../lib/pixelblaze.mjs';
@@ -56,5 +56,9 @@ process.stdout.write(`smoke: map get … `);
 const mapSource = await pb.getMap();
 const coords = await pb.getMap({ coords: true });
 console.log(`ok (${mapSource.length} chars source, ${coords.length} coords)`);
+
+process.stdout.write(`smoke: ping … `);
+const ms = await pb.ping();
+console.log(`ok (${ms} ms)`);
 
 console.log(`smoke sweep passed against ${host}`);

@@ -41,6 +41,9 @@
     node tools/pbz.mjs info                               firmware/hardware, FPS, memory, uptime, storage, group/peers
     node tools/pbz.mjs map get [--coords] > map.js        fetch the pixel-map source (or --coords for the normalized render coords)
     node tools/pbz.mjs map set map.js                     compute + push the live render geometry AND persist the source
+    node tools/pbz.mjs reboot                             restart the device (drops off the network for several seconds)
+    node tools/pbz.mjs ping                                round-trip latency to the device
+    node tools/pbz.mjs discover [--ms=3000]                listen for Pixelblaze UDP beacons on the LAN, print host(s) found
 
   Notes:
     - `run` replaces the running program in place — great for fast iteration. It
@@ -67,6 +70,9 @@
       source, so the Mapper tab and the actual rendering never drift apart. `map get --coords`
       shows the live normalized geometry (via the same compute path) — the way to check the
       device matches a committed map.js.
+    - `reboot` is HTTP POST /reboot, not a websocket message (the Python client gets this
+      wrong). `discover` doesn't need --host — it listens for LAN beacon broadcasts
+      (requires discoveryEnable, on by default) instead of hardcoding an IP.
 */
 
 import { readFile } from 'node:fs/promises';
@@ -275,6 +281,20 @@ try {
     } else {
       die('usage: map get [--coords] | map set <file>');
     }
+  } else if (cmd === 'reboot') {
+    const host = resolveHost();
+    await new Pixelblaze(host).reboot();
+    console.log(`reboot: sent to ${host}`);
+  } else if (cmd === 'ping') {
+    const host = resolveHost();
+    const ms = await new Pixelblaze(host).ping();
+    console.log(`ping: ${ms} ms`);
+  } else if (cmd === 'discover') {
+    const ms = flags.ms ? Number(flags.ms) : 3000;
+    console.log(`listening for beacons on UDP 1889 for ${ms} ms …`);
+    const found = await Pixelblaze.discover(ms);
+    for (const d of found) console.log(`  ${d.address}  chipId ${d.chipId}`);
+    console.log(`(${found.length} device${found.length === 1 ? '' : 's'} found)`);
   } else if (cmd === 'delete') {
     const host = resolveHost();
     const target = pos[1]; if (!target) die('usage: delete <Name or id>');
@@ -311,7 +331,7 @@ try {
       console.log(`ok — saved & activated (id ${res.id}; preview ${res.frames} frames, ${res.previewBytes} B).`);
     }
   } else {
-    console.log('commands: run | save | compile | set | setvars | seq | playlist | list | activate | brightness | limit | power | config | set-config | delete | export | import | info | map  (see header of this file)');
+    console.log('commands: run | save | compile | set | setvars | seq | playlist | list | activate | brightness | limit | power | config | set-config | delete | export | import | info | map | reboot | ping | discover  (see header of this file)');
     process.exit(cmd ? 1 : 0);
   }
 } catch (e) {
