@@ -46,6 +46,9 @@
     node tools/pbz.mjs reboot                             restart the device (drops off the network for several seconds)
     node tools/pbz.mjs ping                                round-trip latency to the device
     node tools/pbz.mjs discover [--ms=3000]                listen for Pixelblaze UDP beacons on the LAN, print host(s) found
+    node tools/pbz.mjs backup [file.pbb]                  snapshot every device file (patterns, config, playlist, map) to one JSON .pbb
+    node tools/pbz.mjs backup --fs-image [file.bin]       device-side full-flash image (POST /backupFsImage); restore by holding the button at power-up
+    node tools/pbz.mjs restore <file.pbb> [--prune] --yes destructive: POST each file back + reboot; --prune also deletes device files absent from the backup
 
   Notes:
     - `run` replaces the running program in place — great for fast iteration. It
@@ -81,6 +84,12 @@
     - `reboot` is HTTP POST /reboot, not a websocket message (the Python client gets this
       wrong). `discover` doesn't need --host — it listens for LAN beacon broadcasts
       (requires discoveryEnable, on by default) instead of hardcoding an IP.
+    - `backup` protects work the web UI never told this repo about (patterns authored
+      straight in the browser). It's plain JSON, not a zip — GET /list, fetch every file
+      except the `*.gz` web-app blobs, verify each byte size, base64 it. `restore` is
+      overwrite-only unless you pass --prune (the web UI's own restore wipes first; this
+      is gentler) and always reboots after — it's destructive enough to require --yes.
+      WiFi config is never included in either direction.
 */
 
 import { readFile } from 'node:fs/promises';
@@ -333,6 +342,25 @@ try {
     const found = await Pixelblaze.discover(ms);
     for (const d of found) console.log(`  ${d.address}  chipId ${d.chipId}`);
     console.log(`(${found.length} device${found.length === 1 ? '' : 's'} found)`);
+  } else if (cmd === 'backup') {
+    const host = resolveHost();
+    const pb = mkPixelblaze(host);
+    if (flags['fs-image']) {
+      const file = pos[1] || `${host}-fsimage-${new Date().toISOString().slice(0, 10)}.bin`;
+      process.stdout.write(`Requesting device-side flash image (LEDs go dark while it writes) … `);
+      const res = await pb.backupFsImage(file);
+      console.log(`ok — ${res.bytes} bytes -> ${res.file} (restore by holding the button at power-up, not \`pbz restore\`)`);
+    } else {
+      process.stdout.write('Fetching file list … ');
+      const res = await pb.saveBackup(pos[1]);
+      console.log(`ok — ${res.count} files -> ${res.file}`);
+    }
+  } else if (cmd === 'restore') {
+    const host = resolveHost();
+    const file = pos[1]; if (!file) die('usage: restore <file.pbb> [--prune] --yes');
+    if (!flags.yes) die('restore is destructive (overwrites device files + reboots) — pass --yes to confirm. WiFi config is never included in a backup.');
+    const res = await mkPixelblaze(host).restoreBackup(file, { prune: !!flags.prune });
+    console.log(`restored ${res.restored} files${res.pruned.length ? `, pruned ${res.pruned.length}` : ''} — rebooting`);
   } else if (cmd === 'delete') {
     const host = resolveHost();
     const target = pos[1]; if (!target) die('usage: delete <Name or id>');
@@ -375,7 +403,7 @@ try {
       }
     }
   } else {
-    console.log('commands: run | save | compile | set | setvars | seq | playlist | list | activate | brightness | limit | power | config | set-config | delete | export | import | info | map | reboot | ping | discover  (see header of this file)');
+    console.log('commands: run | save | compile | set | setvars | seq | playlist | list | activate | brightness | limit | power | config | set-config | delete | export | import | info | map | reboot | ping | discover | backup | restore  (see header of this file)');
     process.exit(cmd ? 1 : 0);
   }
   // Each command's Pixelblaze instance(s) now share one reused connection
