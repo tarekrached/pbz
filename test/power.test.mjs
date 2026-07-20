@@ -9,15 +9,15 @@ import { budgetChain, solveCapPercent, channelFullAmps, estimateFrameAmps, estim
 const here = import.meta.dirname;
 const power = JSON.parse(await readFile(path.join(here, '../power.json'), 'utf8'));
 
-test('the PSU is the binding link (9.17A, below breaker/wire/connector and even all-four-max)', () => {
+test('the PSU is the binding link (6.67A, below the 7.5A DIN-4 socket / breaker / wire and even all-four-max)', () => {
   const { binding } = budgetChain(power);
   assert.match(binding.name, /PSU/);
   assert.equal(binding.amps, power.psu.rated_amps);
 });
 
-test('raw ratio before margin: 9.17A / 11.4A -> 80%', () => {
+test('raw ratio before margin: 6.67A / 11.4A -> 58%', () => {
   const { rawPct } = solveCapPercent(power);
-  assert.equal(Math.floor(rawPct), 80);
+  assert.equal(Math.floor(rawPct), 58);
 });
 
 test('solved cap applies margin on top of the raw ratio and stays in [0,100]', () => {
@@ -26,17 +26,22 @@ test('solved cap applies margin on top of the raw ratio and stays in [0,100]', (
   assert.ok(pct > 0 && pct <= 100);
 });
 
-test('a wider PSU margin never overruns 100%', () => {
-  const fat = { ...power, psu: { ...power.psu, rated_amps: 999 }, margin: 1 };
+test('a chain wider than all-four-max never overruns 100%', () => {
+  const fat = {
+    ...power,
+    psu: { ...power.psu, rated_amps: 999 },
+    protection_chain: { ...power.protection_chain, din4_socket_amps: 999 },
+    margin: 1,
+  };
   const { pct } = solveCapPercent(fat);
   assert.equal(pct, 100);
 });
 
-test('binding link switches when the PSU is no longer weakest', () => {
+test('binding link switches to the DIN-4 socket when the PSU is no longer weakest', () => {
   const bigPsu = { ...power, psu: { ...power.psu, rated_amps: 40 } };
   const { binding } = budgetChain(bigPsu);
-  assert.equal(binding.name, 'breaker');
-  assert.equal(binding.amps, 15);
+  assert.match(binding.name, /DIN-4 output socket/);
+  assert.equal(binding.amps, 7.5);
 });
 
 // --- Chunk 12: live power estimator ---
