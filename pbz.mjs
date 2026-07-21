@@ -23,8 +23,11 @@
     node tools/pbz.mjs save    patterns/foo.js [Name]     compile + save to device + activate
     node tools/pbz.mjs compile patterns/foo.js            compile only (validate, show exports)
     node tools/pbz.mjs set     sliderSpeed=0.4 toggleRhythmSync=1   set controls on the active pattern
+    node tools/pbz.mjs set     hsvPickerColor=0.33,1,1    picker controls take 3 comma-separated components, 0..1
     node tools/pbz.mjs setvars myVar=3 phase=0.25         set exported pattern variables (not UI controls) on the active pattern
     node tools/pbz.mjs seq off|shuffle|playlist           set the sequencer mode
+    node tools/pbz.mjs seq pause|resume|next              pause/resume auto-advance, or jump to the next pattern now
+    node tools/pbz.mjs seq time <seconds>                 set the shuffle/playlist advance interval
     node tools/pbz.mjs playlist                           show the shared playlist (position + items)
     node tools/pbz.mjs playlist set <Name or id>:<ms> […] replace the playlist's items
     node tools/pbz.mjs list                               list saved patterns (id + name)
@@ -60,7 +63,9 @@
     - `setvars` pokes exported pattern *variables* directly (whatever the running pattern
       declares with `export var`) — distinct from `set`, which drives UI controls.
     - `seq`/`playlist` drive the device's single shared playlist (`_defaultplaylist_`); items
-      are `<Name or id>:<ms>` — the same name/id resolution `activate`/`delete` use.
+      are `<Name or id>:<ms>` — the same name/id resolution `activate`/`delete` use. `seq pause`/
+      `resume` toggle `runSequencer` (the web UI's play/pause button) without leaving Playlist
+      mode; `seq next` jumps immediately; `seq time <n>` sets `sequenceTimer` in SECONDS (not ms).
     - `limit` is the load-bearing power-safety cap (see ../CLAUDE.md) — it clamps hardware
       output regardless of pattern/slider. `brightness` is the ordinary dimmer.
     - `limit --for-budget` derives that cap from tools/power.json (PSU/breaker/wire/connector
@@ -173,7 +178,18 @@ try {
   } else if (cmd === 'set') {
     const host = resolveHost();
     const controls = {};
-    for (const kv of pos.slice(1)) { const [k, v] = kv.split('='); controls[k] = Number(v); }
+    for (const kv of pos.slice(1)) {
+      const [k, v] = kv.split('=');
+      if (/^(hsvPicker|rgbPicker)/.test(k)) {
+        const parts = v.split(',').map(Number);
+        if (parts.length !== 3 || parts.some(n => Number.isNaN(n) || n < 0 || n > 1)) {
+          die(`usage: ${k}=h,s,v (or r,g,b) — exactly 3 components in 0..1 (got "${v}")`);
+        }
+        controls[k] = parts;
+      } else {
+        controls[k] = Number(v);
+      }
+    }
     if (!Object.keys(controls).length) die('usage: set name=value [name=value …]');
     await mkPixelblaze(host).setControls(controls);
     console.log('set:', JSON.stringify(controls));
@@ -251,11 +267,25 @@ try {
     }
   } else if (cmd === 'seq') {
     const host = resolveHost();
+    const sub = pos[1];
     const modes = { off: 0, shuffle: 1, playlist: 2 };
-    const mode = modes[pos[1]];
-    if (mode === undefined) die('usage: seq off|shuffle|playlist');
-    await mkPixelblaze(host).setSequencerMode(mode);
-    console.log(`sequencer mode: ${pos[1]} (${mode})`);
+    if (sub === 'pause' || sub === 'resume') {
+      await mkPixelblaze(host).setSequencerState(sub === 'resume');
+      console.log(`sequencer: ${sub}d`);
+    } else if (sub === 'next') {
+      await mkPixelblaze(host).nextPattern();
+      console.log('sequencer: advanced to next pattern');
+    } else if (sub === 'time') {
+      const n = Number(pos[2]);
+      if (Number.isNaN(n) || n < 1) die('usage: seq time <seconds ≥ 1>');
+      await mkPixelblaze(host).setConfig({ sequenceTimer: n });
+      console.log(`sequencer interval: ${n}s`);
+    } else if (modes[sub] !== undefined) {
+      await mkPixelblaze(host).setSequencerMode(modes[sub]);
+      console.log(`sequencer mode: ${sub} (${modes[sub]})`);
+    } else {
+      die('usage: seq off|shuffle|playlist|pause|resume|next|time <seconds>');
+    }
   } else if (cmd === 'playlist') {
     const host = resolveHost();
     const pb = mkPixelblaze(host);
