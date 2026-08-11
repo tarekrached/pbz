@@ -13,7 +13,7 @@ I built this for a 170-pixel WRGB ring around our living room, because my kid an
 I wanted to keep patterns in git and iterate from a text editor instead of a
 browser tab. It grew a lot of edges. It is not affiliated with ElectroMage.
 
-<!-- TODO(demo): drop the wall GIF here — `pbz run` on a pattern, then a `pbz set` tweak. -->
+<!-- TODO(demo): drop the wall GIF here. `pbz run` on a pattern, then a `pbz set` tweak. -->
 
 ## How it works (the interesting part)
 
@@ -24,13 +24,13 @@ either reimplement the compiler or give up on compiling.
 pbz does neither. It downloads the web UI off your device
 (`GET /index.html.gz`), pulls Ben Hencke's own `window.compile` and `LZString`
 out of it, and runs them in `node:vm`. The compiler comes from the device, so
-the bytecode always matches the firmware that device is running — including
+the bytecode always matches the firmware that device is running, including
 firmware pbz has never heard of. Nothing is redistributed; it borrows the code
 at runtime, from your own hardware.
 
 The same trick handles the pixel map. The device can't evaluate map JS either,
 so `map set` extracts the web UI's `normalizeMap`, runs it headless, and sends
-the packed binary frame — rather than reimplementing the normalization math and
+the packed binary frame, rather than reimplementing the normalization math and
 hoping it matches.
 
 ## Install
@@ -55,7 +55,7 @@ pbz's own directory. That's so a project can keep its own `pb.config.json` and
 ```sh
 # --- patterns ---
 pbz compile patterns/foo.js         # validate + list exported controls; sends nothing
-pbz run patterns/foo.js             # push live, NOT saved — the iteration loop
+pbz run patterns/foo.js             # push live, NOT saved. The iteration loop
 pbz save patterns/foo.js [Name]     # persist + activate, renders a preview thumbnail
 pbz list                            # saved patterns, id + name
 pbz activate "Rainbow Worms"        # switch the active pattern
@@ -120,7 +120,7 @@ pb.close();
 ```
 
 Because each device hands over its own compiler, fanning one pattern out across
-a group works even with mixed firmware versions — see
+a group works even with mixed firmware versions. See
 [`examples/fan-out.mjs`](examples/fan-out.mjs). That makes the library a usable
 backend for a Firestorm-style multi-device controller.
 
@@ -132,7 +132,7 @@ map 1:1 to a wire response return it parsed and unrenamed; composites like
 ## Device etiquette & recovery
 
 **Read this before you script anything against a Pixelblaze.** The ESP32's
-network stack is small and easy to choke — during development a burst of
+network stack is small and easy to choke. During development a burst of
 connections plus one client killed mid-transfer wedged a device twice in one
 session, and the second time it needed a power cycle. pbz now fails fast (5 s
 connect timeout) and holds one reused connection per process, but nothing
@@ -140,7 +140,7 @@ coordinates *across* processes. That part is on you, and scripted or
 agent-driven bursts are exactly the risky shape:
 
 - **Batch, don't loop.** A multi-step sequence should be one script that
-  `import`s `Pixelblaze` and reuses one connection — never a shell loop of
+  `import`s `Pixelblaze` and reuses one connection, never a shell loop of
   separate `pbz` invocations. If separate commands are unavoidable, leave a beat
   between them.
 - **Never SIGKILL a pbz mid-command**, especially during a binary transfer
@@ -153,11 +153,11 @@ agent-driven bursts are exactly the risky shape:
   monitor script, …). A quiet-looking terminal is **not** evidence of a quiet
   device: one wedge here was caused by a home-automation integration polling
   throughout a session that was only counting its own traffic.
-- **Recovery playbook.** The failure is asymmetric — HTTP sometimes heals on its
-  own as TCP orphans time out, the websocket server never does; its slots leak
-  until restart.
+- **Recovery playbook.** The failure is asymmetric. HTTP sometimes heals on its
+  own as TCP orphans time out; the websocket server never does, and its slots
+  leak until restart.
   0. **Stop the other consumers first.** With something reconnecting on a loop,
-     the steps below either don't stick or don't happen at all — and the device
+     the steps below either don't stick or don't happen at all, and the device
      comes straight back up into the same storm after a power cycle.
   1. ws dead, HTTP alive → `pbz reboot`. It's an HTTP POST, so it works while
      the websocket server is wedged. This is the lifeline; it has never needed
@@ -166,7 +166,7 @@ agent-driven bursts are exactly the risky shape:
   3. Power-cycle, having done step 0 first.
 - **A wedged device can take down its clients.** An unreachable Pixelblaze
   starved a Home Assistant instance's executor pool (sync client, blocking
-  connects, no timeout) until the whole thing stopped serving HTTP — process
+  connects, no timeout) until the whole thing stopped serving HTTP: process
   alive, event loop blocked. If something that talks to your Pixelblaze goes
   unresponsive, suspect the device first, and cut its power so the blocked
   connects fail fast.
@@ -193,7 +193,7 @@ measured all-four-max: 11.4 A (273 W)
 raw budget/all-four-max: 58.5%  ->  cap × 0.95 margin: 55%
 ```
 
-The chain is whatever you write in the file — add, drop, or rename links and
+The chain is whatever you write in the file. Add, drop, or rename links and
 they print as written. The budget is the weakest one. **Measure
 `all_four_max_amps` on your own run; don't take it off the strip's nameplate.**
 The one here draws about 112% of its rated figure.
@@ -220,7 +220,7 @@ npm run fixture       # capture your device's web UI so the offline tests can ru
 ```
 
 `npm test` needs no device. The tests that exercise the real compiler need a
-captured copy of the web UI, which is **not committed** — it's the vendor's
+captured copy of the web UI, which is **not committed**. It's the vendor's
 copyrighted application. `npm run fixture` pulls one off your own device into a
 gitignored path; without it those tests skip with a message rather than fail.
 
@@ -232,8 +232,8 @@ compiler output legitimately differs between firmware versions.
 
 Honest list, not a roadmap I'm promising to finish.
 
-- **Sensor board support is unfinished.** There's no dedicated wire frame for it
-  — sensor values reach clients only as pattern-exported vars the firmware fills
+- **Sensor board support is unfinished.** There's no dedicated wire frame for it.
+  Sensor values reach clients only as pattern-exported vars the firmware fills
   each frame. A `pbz sensors` live monitor and a record/replay probe are
   designed but not built, because the board wasn't in hand.
 - **No cross-process locking.** One process holds one connection, but two
@@ -250,7 +250,7 @@ Honest list, not a roadmap I'm promising to finish.
 ## Credit
 
 Pixelblaze is [Ben Hencke's](https://electromage.com) work, and this tool is
-built directly on it — the compiler, the LZString packer, and the map
+built directly on it. The compiler, the LZString packer, and the map
 normalization are all his code, fetched from your device at runtime. pbz is
 unofficial and unaffiliated. If anything here steps on toes I'm happy to change
 it.
@@ -261,5 +261,5 @@ more mature in places. It can't compile patterns, and a few wire formats differ
 from what this firmware actually does (`reboot` is an HTTP POST, the brightness
 cap key is `maxBrightness`).
 
-MIT licensed — see [LICENSE](LICENSE), which also covers the one vendored file
+MIT licensed. See [LICENSE](LICENSE), which also covers the one vendored file
 (`lib/jpeg-encoder.cjs`, Adobe BSD).
