@@ -43,6 +43,7 @@ protects — done); all are buildable before the sensor board lands (~week of 20
 - [ ] **19 — power sampling window + SB presence check** (S)
 - [x] **20 — connection hygiene** (M — open-timeout + shared connection; born of a live wedge 2026-07-19)
 - [ ] **21 — per-host CLI lock** (S–M — **contingent**: only if parallel-invocation churn recurs)
+- [x] **22 — TypeScript declarations** (S — added 2026-08-11, post-Chunk-10)
 
 Suggested order by value: **0, 1, 2, 11, 4, 3, 7, 5, 6, 12, 13, 8, 9, 10.**
 Remaining, by value: **20, 14, 15 done**; **16 implemented but unverified** (`seq time` still
@@ -675,6 +676,30 @@ within ~10 min under a single batched library script**, i.e. careful behavior on
   response in 8 s — event loop blocked, process alive). That blast-radius direction —
   device wedge → home-automation outage → everything else on that host affected — was not on
   the risk list before, and is the reason the etiquette section leads with the client budget.
+
+### Chunk 22 — TypeScript declarations
+Chunk 10 deferred types post-publish; this un-defers them, because the library half is
+the valuable half and a consumer currently gets no completion on ~30 methods.
+- Hand-written `lib/pixelblaze.d.mts`, wired through `package.json`'s `types` + `exports`.
+- **Hand-written, not generated.** Generating from JSDoc would need a `tsc` build step and a
+  checked-in generated artifact; "clone it and run it, nothing to install" is the pitch and
+  it wins here.
+- **Acceptance:** `tsc --strict --noEmit --module nodenext` passes on a consumer file
+  exercising every method, *and* fails on a file that misuses them.
+- **Size:** S.
+- **Landed 2026-08-11.** Three things worth keeping:
+  - **`.d.ts` next to a `.mjs` is invisible.** Under `moduleResolution: nodenext`, TypeScript
+    wants `pixelblaze.d.mts`. The first type-check failed with "implicitly has an 'any' type"
+    against a `.d.ts` that looked perfectly correct — the declarations were simply never
+    loaded. Would have shipped silently; nothing in `npm test` could have caught it.
+  - **The drift guard is shape-only, and says so.** `test/types.test.mjs` reflects over the
+    prototype and compares against the members parsed out of the declaration file, so adding a
+    method without declaring it fails the suite. It cannot check signatures. It carries a
+    self-check test, and was verified by adding a real method and watching it fail.
+  - **Read methods are declared honestly.** Wire-response shapes get the fields observed on
+    v3.67 plus `[key: string]: unknown`, and every field is optional, because the set varies
+    with firmware and hardware. A declaration that invents fields is worse than none: the
+    editor will autocomplete something the device never sends.
 
 ### Chunk 21 — per-host CLI lock (contingent — build only on observed need)
 **The technical fix for cross-process bursts.** Chunk 20's shared connection is per-process;

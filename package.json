@@ -2,7 +2,7 @@
   "name": "pbz",
   "version": "0.1.0",
   "type": "module",
-  "description": "Unofficial command-line tool and JS library for Pixelblaze LED controllers. Compiles patterns headless — no browser, no Python, no dependencies.",
+  "description": "Unofficial command-line tool and JS library for Pixelblaze LED controllers. Compiles patterns headless \u2014 no browser, no Python, no dependencies.",
   "keywords": [
     "pixelblaze",
     "led",
@@ -36,7 +36,10 @@
     "fixture": "node test/capture-fixture.mjs"
   },
   "exports": {
-    ".": "./lib/pixelblaze.mjs"
+    ".": {
+      "types": "./lib/pixelblaze.d.mts",
+      "default": "./lib/pixelblaze.mjs"
+    }
   },
   "files": [
     "pbz.mjs",
@@ -46,5 +49,6 @@
     "power.example.json",
     "README.md",
     "LICENSE"
-  ]
+  ],
+  "types": "./lib/pixelblaze.d.mts"
 }

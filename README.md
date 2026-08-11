@@ -240,8 +240,9 @@ Honest list, not a roadmap I'm promising to finish.
   terminals running `pbz` at once are two clients. See Device etiquette.
 - **`seq time` is the one command not verified against hardware** in the current
   cycle; the rest of the sequencer transport is.
-- **No JSDoc/`.d.ts` yet**, no CI, not on npm. Types would be genuinely useful
-  for the library half.
+- **No CI, not on npm.** TypeScript declarations do ship
+  (`lib/pixelblaze.d.mts`), hand-written and drift-guarded by `npm test`, but
+  the `.mjs` sources carry no JSDoc.
 - `restore` is overwrite-only unless you pass `--prune`. The web UI's own
   restore wipes first; this is deliberately gentler.
 - WiFi credentials are never in a `.pbb`, in either direction. That's the

@@ -21,6 +21,13 @@ Everything else:
   vendor's copyrighted application and must never be committed.
 - The `Pixelblaze` class takes a host in its constructor and knows nothing about
   argv or config files. Host resolution belongs to the CLI.
+- **Add a public method, declare it in `lib/pixelblaze.d.mts`.** `npm test`
+  compares the declared member set against the real one and fails if they
+  diverge, but it cannot check that a *signature* is right. If you change one,
+  verify with a TypeScript compiler you supply yourself (there is no devDep):
+  point `tsc --strict --noEmit --module nodenext` at a file that imports the
+  class and uses the method. Declare only what the device was actually observed
+  to send; the read methods use an index signature for the rest, deliberately.
 - Read methods that map 1:1 to a wire response return it parsed and unrenamed.
   Composites build on those accessors and only add fields that bake in a decode.
   Cosmetic labeling is the CLI's job.
