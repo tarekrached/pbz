@@ -1,0 +1,17 @@
+# Your device's address and your install's electrical numbers — start from the
+# .example.json files next to them. Never commit the real ones: the power
+# figures in particular drive a hardware brightness cap, and someone else's are
+# worse than none.
+pb.config.json
+power.json
+
+# Captured web UI for the hermetic tests (`npm run fixture`). This is the device
+# vendor's copyrighted application — pbz never redistributes it, it only borrows
+# it at runtime from the device you point it at. Keep it out of git.
+test/fixtures/ui-*.html.gz
+
+# Command output
+*.pbb
+*.epe
+
+node_modules/

@@ -1,0 +1,42 @@
+MIT License
+
+Copyright (c) 2026 Tarek Rached
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+Third-party notices
+
+lib/jpeg-encoder.cjs is vendored, not original to this project. It is the
+Adobe/bytestrom JPEG encoder ported to JavaScript, under the 3-clause BSD
+license reproduced in full at the top of that file. It is the only vendored
+runtime file here.
+
+Pixelblaze's pattern compiler and its LZString source-packer are Ben Hencke's
+code, and this project does not contain or redistribute either one. They are
+fetched at runtime from the web UI of whichever Pixelblaze you point pbz at
+(GET /index.html.gz) and executed headless in node:vm — which is exactly why
+the bytecode always matches your installed firmware. The same applies to the
+pixel-map normalization used by `map set`. The captured web UI that the
+hermetic tests run against is deliberately not committed; `npm run fixture`
+pulls a copy from your own device into a gitignored path.
+
+pbz is unofficial and not affiliated with or endorsed by ElectroMage.
+Pixelblaze is Ben Hencke's product; this is a third-party tool for it.

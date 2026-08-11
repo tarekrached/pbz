@@ -2,12 +2,14 @@
 // arithmetic on power.json, no device, no LAN.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { budgetChain, solveCapPercent, channelFullAmps, estimateFrameAmps, estimateDraw } from '../lib/power.mjs';
 
-const here = import.meta.dirname;
-const power = JSON.parse(await readFile(path.join(here, '../power.json'), 'utf8'));
+// Runs against the SHIPPED example (a real 170-px WRGB ring on a 160 W brick),
+// not against whatever power.json the machine happens to have — so the numbers
+// asserted below stay meaningful in a fresh clone.
+const power = JSON.parse(readFileSync(path.join(import.meta.dirname, '../power.example.json'), 'utf8'));
 
 test('the PSU is the binding link (6.67A, below the 7.5A DIN-4 socket / breaker / wire and even all-four-max)', () => {
   const { binding } = budgetChain(power);
@@ -37,10 +39,18 @@ test('a chain wider than all-four-max never overruns 100%', () => {
   assert.equal(pct, 100);
 });
 
+test('links are read from the chain as written, not hardcoded (commentary keys skipped)', () => {
+  const { links } = budgetChain(power);
+  assert.deepEqual(links.map(l => l.name).slice(1), ['din4 socket', 'breaker', 'ring wire', 'feed leg', 'connector']);
+  const custom = { ...power, protection_chain: { _comment: 'ignored', inline_fuse_amps: 3 } };
+  assert.deepEqual(budgetChain(custom).links.map(l => l.name).slice(1), ['inline fuse']);
+  assert.equal(budgetChain(custom).binding.amps, 3);
+});
+
 test('binding link switches to the DIN-4 socket when the PSU is no longer weakest', () => {
   const bigPsu = { ...power, psu: { ...power.psu, rated_amps: 40 } };
   const { binding } = budgetChain(bigPsu);
-  assert.match(binding.name, /DIN-4 output socket/);
+  assert.match(binding.name, /din4 socket/);
   assert.equal(binding.amps, 7.5);
 });
 

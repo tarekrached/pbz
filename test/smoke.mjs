@@ -3,21 +3,11 @@
 // session, catches connection/parse breakage instantly (~2s, no mutation).
 // discover isn't included: it's a multi-second UDP listen, a poor fit for a
 // fast sweep, and doesn't touch the target host at all.
-import { existsSync, readFileSync } from 'node:fs';
-import path from 'node:path';
 import { Pixelblaze } from '../lib/pixelblaze.mjs';
+import { resolveHost } from '../lib/config.mjs';
 
-function resolveHost() {
-  if (process.env.PB_HOST) return process.env.PB_HOST;
-  const cfg = path.join(import.meta.dirname, '../pb.config.json');
-  if (existsSync(cfg)) {
-    const h = JSON.parse(readFileSync(cfg, 'utf8')).host;
-    if (h) return h;
-  }
-  throw new Error('No host: set $PB_HOST or tools/pb.config.json {"host":"…"}');
-}
-
-const host = resolveHost();
+const host = process.env.PB_HOST || resolveHost();
+if (!host) throw new Error('No host: set $PB_HOST or add pb.config.json {"host":"…"}');
 const pb = new Pixelblaze(host);
 
 process.stdout.write(`smoke: list … `);

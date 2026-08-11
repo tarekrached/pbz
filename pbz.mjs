@@ -11,48 +11,47 @@
 
   This file is CLI plumbing only (argv parsing, host resolution, dispatch, printing);
   the actual work happens in the `Pixelblaze` class (lib/pixelblaze.mjs), which you can
-  also `import` directly as a library — see tools/README.md.
+  also `import` directly as a library — see README.md.
 
   `save` also renders a preview thumbnail: it runs the pattern, collects the device's
   live preview frames, and encodes them as the JPEG "waterfall" (x = LEDs, y = render
   iterations) the firmware expects. Without a valid preview the web UI throws "trouble
   loading preview images" and drops to /?min.
 
-  Commands (host comes from --host=…, $PB_HOST, or tools/pb.config.json):
-    node tools/pbz.mjs run     patterns/foo.js            compile + run live (NOT saved)
-    node tools/pbz.mjs save    patterns/foo.js [Name]     compile + save to device + activate
-    node tools/pbz.mjs compile patterns/foo.js            compile only (validate, show exports)
-    node tools/pbz.mjs set     sliderSpeed=0.4 toggleRhythmSync=1   set controls on the active pattern
-    node tools/pbz.mjs set     hsvPickerColor=0.33,1,1    picker controls take 3 comma-separated components, 0..1
-    node tools/pbz.mjs setvars myVar=3 phase=0.25         set exported pattern variables (not UI controls) on the active pattern
-    node tools/pbz.mjs seq off|shuffle|playlist           set the sequencer mode
-    node tools/pbz.mjs seq pause|resume|next              pause/resume auto-advance, or jump to the next pattern now
-    node tools/pbz.mjs seq time <seconds>                 set the shuffle/playlist advance interval
-    node tools/pbz.mjs playlist                           show the shared playlist (position + items)
-    node tools/pbz.mjs playlist set <Name or id>:<ms> […] replace the playlist's items
-    node tools/pbz.mjs list                               list saved patterns (id + name)
-    node tools/pbz.mjs activate <Name or id>              switch the active pattern
-    node tools/pbz.mjs brightness <0..1> [--save]         set global brightness (ephemeral unless --save)
-    node tools/pbz.mjs limit <0..100>                     set the firmware brightness CAP (persisted; the power-safety limit)
-    node tools/pbz.mjs limit --for-budget [--set]         derive the cap from tools/power.json (dry-run by default; --set persists)
-    node tools/pbz.mjs power budget                       print the PSU/breaker/wire/connector chain and which link binds
-    node tools/pbz.mjs power                              estimate the ACTIVE pattern's real draw (peak/mean, W-extraction modeled)
-    node tools/pbz.mjs power patterns/foo.js               same, for a candidate pattern (runs it live first, like `run`)
-    node tools/pbz.mjs config [--check]                   print device/LED settings; --check asserts colorOrder=WRGB, pixelCount=170
-    node tools/pbz.mjs set-config key=value […]           update device/LED settings (colorOrder, pixelCount, name, …)
-    node tools/pbz.mjs delete <Name or id>                delete a saved pattern
-    node tools/pbz.mjs export <Name or id> [file.epe]      fetch source + preview, write a .epe (defaults to "<Name>.epe")
-    node tools/pbz.mjs import <file.epe>                  recompile a .epe's source locally and save + activate it
-    node tools/pbz.mjs info                               firmware/hardware, FPS, memory, uptime, storage, group/peers
-    node tools/pbz.mjs map get [--coords] > map.js        fetch the pixel-map source (or --coords for the normalized render coords)
-    node tools/pbz.mjs map set map.js                     compute + push the live render geometry AND persist the source
-    node tools/pbz.mjs reboot                             restart the device (drops off the network for several seconds)
-    node tools/pbz.mjs ping                                round-trip latency to the device
-    node tools/pbz.mjs discover [--ms=3000]                listen for Pixelblaze UDP beacons on the LAN, print host(s) found
-    node tools/pbz.mjs backup [file.pbb]                  snapshot every device file (patterns, config, playlist, map) to one JSON .pbb
-    node tools/pbz.mjs backup --fs-image [file.bin]       device-side full-flash image (POST /backupFsImage); restore by holding the button at power-up
-    node tools/pbz.mjs restore <file.pbb> [--prune] --yes destructive: POST each file back + reboot; --prune also deletes device files absent from the backup
-
+  Commands (host comes from --host=…, $PB_HOST, or pb.config.json):
+    pbz run patterns/foo.js                  compile + run live (NOT saved)
+    pbz save patterns/foo.js [Name]          compile + save to device + activate
+    pbz compile patterns/foo.js              compile only (validate, show exports)
+    pbz set sliderSpeed=0.4 toggleFoo=1      set controls on the active pattern
+    pbz set hsvPickerColor=0.33,1,1          picker controls take 3 comma-separated components, 0..1
+    pbz setvars myVar=3 phase=0.25           set exported pattern variables (not UI controls)
+    pbz seq off|shuffle|playlist             set the sequencer mode
+    pbz seq pause|resume|next                pause/resume auto-advance, or jump to the next pattern now
+    pbz seq time <seconds>                   set the shuffle/playlist advance interval
+    pbz playlist                             show the shared playlist (position + items)
+    pbz playlist set <Name or id>:<ms> […]   replace the playlist's items
+    pbz list                                 list saved patterns (id + name)
+    pbz activate <Name or id>                switch the active pattern
+    pbz brightness <0..1> [--save]           set global brightness (ephemeral unless --save)
+    pbz limit <0..100>                       set the firmware brightness CAP (persisted; the power-safety limit)
+    pbz limit --for-budget [--set]           derive the cap from power.json (dry-run by default; --set persists)
+    pbz power budget                         print the supply/breaker/wire/connector chain and which link binds
+    pbz power                                estimate the ACTIVE pattern's real draw (peak/mean, W-extraction modeled)
+    pbz power patterns/foo.js                same, for a candidate pattern (runs it live first, like `run`)
+    pbz config [--check]                     print device/LED settings; --check asserts pb.config.json's `expect` block
+    pbz set-config key=value […]             update device/LED settings (colorOrder, pixelCount, name, …)
+    pbz delete <Name or id>                  delete a saved pattern
+    pbz export <Name or id> [file.epe]       fetch source + preview, write a .epe (defaults to "<Name>.epe")
+    pbz import <file.epe>                    recompile a .epe's source locally and save + activate it
+    pbz info                                 firmware/hardware, FPS, memory, uptime, storage, group/peers
+    pbz map get [--coords] > map.js          fetch the pixel-map source (or --coords for the normalized render coords)
+    pbz map set map.js                       compute + push the live render geometry AND persist the source
+    pbz reboot                               restart the device (drops off the network for several seconds)
+    pbz ping                                 round-trip latency to the device
+    pbz discover [--ms=3000]                 listen for Pixelblaze UDP beacons on the LAN, print host(s) found
+    pbz backup [file.pbb]                    snapshot every device file (patterns, config, playlist, map) to one JSON .pbb
+    pbz backup --fs-image [file.bin]         device-side full-flash image (POST /backupFsImage); restore by holding the button at power-up
+    pbz restore <file.pbb> [--prune] --yes   destructive: POST each file back + reboot; --prune also deletes device files absent from the backup
   Notes:
     - `run` replaces the running program in place — great for fast iteration. It
       vanishes when you navigate the web UI or reboot; use `save` to persist.
@@ -66,9 +65,9 @@
       are `<Name or id>:<ms>` — the same name/id resolution `activate`/`delete` use. `seq pause`/
       `resume` toggle `runSequencer` (the web UI's play/pause button) without leaving Playlist
       mode; `seq next` jumps immediately; `seq time <n>` sets `sequenceTimer` in SECONDS (not ms).
-    - `limit` is the load-bearing power-safety cap (see ../CLAUDE.md) — it clamps hardware
-      output regardless of pattern/slider. `brightness` is the ordinary dimmer.
-    - `limit --for-budget` derives that cap from tools/power.json (PSU/breaker/wire/connector
+    - `limit` is the power-safety cap — it clamps hardware output regardless of what the
+      pattern or the sliders ask for. `brightness` is the ordinary dimmer.
+    - `limit --for-budget` derives that cap from power.json (PSU/breaker/wire/connector
       chain vs. measured all-four-max draw) instead of a hand-picked number — prints the
       derivation and which link binds; add --set to actually write it.
     - `power` (no arg / a candidate file) estimates REAL draw from sampled preview frames —
@@ -77,8 +76,8 @@
       device's actual brightness x maxBrightness scale and models min(r,g,b) routing to the W
       element itself — a naive R+G+B sum on a white pixel would overestimate its draw ~3x.
       `save` prints the same peak estimate automatically using the thumbnail-capture frames.
-    - `config --check` guards CLAUDE.md invariant #2 (WRGB color order) and the installed
-      170-pixel ring — run it if the rig's behavior looks off before touching wiring.
+    - `config --check` asserts the LED settings declared in pb.config.json's `expect` block
+      (colorOrder, pixelCount, …) — run it if the rig's behavior looks off before touching wiring.
     - `export`/`import` round-trip a pattern through a .epe file (same shape the web UI's
       Export button writes) — a backup/portability path independent of the device's flash.
     - The device can't evaluate the map JS itself (same reason it can't compile patterns) —
@@ -98,11 +97,11 @@
 */
 
 import { readFile } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Pixelblaze } from './lib/pixelblaze.mjs';
 import { stableId, prettyName } from './lib/pbp.mjs';
 import { budgetChain, solveCapPercent, estimateDraw } from './lib/power.mjs';
+import { readConfig, resolveHost as hostFromConfig } from './lib/config.mjs';
 
 // ---------- args & host resolution ----------
 const argv = process.argv.slice(2);
@@ -115,18 +114,15 @@ const cmd = pos[0];
 function resolveHost() {
   if (flags.host) return flags.host;
   if (process.env.PB_HOST) return process.env.PB_HOST;
-  const cfg = path.join(import.meta.dirname, 'pb.config.json');
-  if (existsSync(cfg)) {
-    const h = JSON.parse(readFileSync(cfg, 'utf8')).host;
-    if (h) return h;
-  }
-  die('No host: pass --host=IP, set $PB_HOST, or add tools/pb.config.json {"host":"…"}');
+  const h = hostFromConfig();
+  if (h) return h;
+  die('No host: pass --host=IP, set $PB_HOST, or add pb.config.json {"host":"…"}');
 }
 function die(msg) { console.error('error: ' + msg); for (const pb of instances) pb.close(); process.exit(1); }
 function loadPowerConfig() {
-  const p = path.join(import.meta.dirname, 'power.json');
-  if (!existsSync(p)) die('tools/power.json missing — needed for --for-budget / power budget');
-  return JSON.parse(readFileSync(p, 'utf8'));
+  const cfg = readConfig('power.json');
+  if (!cfg) die('power.json not found (searched up from the current directory) — copy power.example.json to power.json and replace every number with your own install\'s. Someone else\'s power figures are worse than none: this derives a hardware brightness cap.');
+  return cfg.data;
 }
 function printBudgetChain(links, binding) {
   for (const l of links) console.log(`  ${l === binding ? '>' : ' '} ${l.name}: ${l.amps} A`);
@@ -257,11 +253,19 @@ try {
     const host = resolveHost();
     const cfg = await mkPixelblaze(host).getConfig();
     if (flags.check) {
-      const problems = [];
-      if (cfg.colorOrder !== 'WRGB') problems.push(`colorOrder is ${cfg.colorOrder}, expected WRGB`);
-      if (cfg.pixelCount !== 170) problems.push(`pixelCount is ${cfg.pixelCount}, expected 170`);
+      // What "correct" means is per-install, so it's declared in pb.config.json's
+      // `expect` block rather than hardcoded here. Getting colorOrder or
+      // pixelCount wrong makes patterns render subtly wrong for no visible
+      // reason, so this is the cheap thing to run before suspecting wiring.
+      const expect = readConfig('pb.config.json')?.data?.expect;
+      if (!expect || !Object.keys(expect).length) {
+        die('config --check needs an "expect" block in pb.config.json, e.g. {"expect": {"colorOrder": "WRGB", "pixelCount": 170}} — see pb.config.example.json');
+      }
+      const problems = Object.entries(expect)
+        .filter(([k, want]) => cfg[k] !== want)
+        .map(([k, want]) => `${k} is ${cfg[k]}, expected ${want}`);
       if (problems.length) { for (const p of problems) console.error('drift: ' + p); die('config --check failed'); }
-      console.log('config check: ok (colorOrder=WRGB, pixelCount=170)');
+      console.log('config check: ok (' + Object.entries(expect).map(([k, v]) => `${k}=${v}`).join(', ') + ')');
     } else {
       for (const [k, v] of Object.entries(cfg)) console.log(`  ${k} = ${v}`);
     }
@@ -425,10 +429,9 @@ try {
       process.stdout.write(`Saving "${name}" to ${host} … `);
       const res = await pb.save(source, name, { id });
       console.log(`ok — saved & activated (id ${res.id}; preview ${res.frames} frames, ${res.previewBytes} B).`);
-      const powerPath = path.join(import.meta.dirname, 'power.json');
-      if (existsSync(powerPath) && res.rawFrames.length) {
-        const power = JSON.parse(readFileSync(powerPath, 'utf8'));
-        const est = estimateDraw(res.rawFrames, power, await effectiveBrightnessFactor(pb));
+      const powerCfg = readConfig('power.json');
+      if (powerCfg && res.rawFrames.length) {
+        const est = estimateDraw(res.rawFrames, powerCfg.data, await effectiveBrightnessFactor(pb));
         console.log(`  peak est. ${est.peakAmps.toFixed(1)} A / ${est.peakWatts.toFixed(0)} W = ${est.peakPctOfBudget.toFixed(0)}% of budget (${est.bindingLink}, ${est.budgetAmps} A)`);
       }
     }

@@ -1,19 +1,19 @@
 // Hermetic guards for the pixel-map path (PBZ-PLAN.md Chunk 8): source
 // evaluation and type-8 frame packing are pure (test-first, no device);
-// normalizeMap runs offline against the same vendored web UI fixture
-// golden-bytes.test.mjs uses (firmware v3.67), mirroring Chunk 1's approach —
-// no LAN needed since the extraction is deterministic given the same html.
+// normalizeMap runs offline against the same captured web UI golden-bytes.test.mjs
+// uses (`npm run fixture`), mirroring Chunk 1's approach — no LAN needed since
+// the extraction is deterministic given the same html. Unlike the golden bytes,
+// these assert normalization BEHAVIOR rather than a byte snapshot, so any
+// captured firmware will do.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import zlib from 'node:zlib';
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
 import { makeNormalizeMap } from '../lib/compiler.mjs';
 import { evalMapSource, buildPixelMapFrame } from '../lib/map.mjs';
+import { loadWebUI, CAPTURE_HINT } from './fixtures.mjs';
 
-const here = import.meta.dirname;
-const gz = await readFile(path.join(here, 'fixtures/ui-v3.67.html.gz'));
-const html = zlib.gunzipSync(gz).toString('utf8').replace(/^﻿/, '');
+const ui = loadWebUI();
+const skip = ui ? false : CAPTURE_HINT;
+const html = ui?.html;
 
 test('evalMapSource: raw JSON coordinate array', () => {
   const raw = evalMapSource('[[0,0],[1,0],[1,1]]', 3);
@@ -40,7 +40,7 @@ test('buildPixelMapFrame: byte-for-byte type-8 frame (header + row-major Uint16L
   assert.equal(frame.toString('hex'), '02000000' + '02000000' + '0c000000' + '0000' + '0000' + 'ffff' + '0000' + 'ffff' + 'ffff');
 });
 
-test('makeNormalizeMap: Fill (fit=0) stretches each dimension independently to 0..65535', () => {
+test('makeNormalizeMap: Fill (fit=0) stretches each dimension independently to 0..65535', { skip }, () => {
   const normalizeMap = makeNormalizeMap(html);
   const { pixelMap, dimensions } = normalizeMap([[0, 0], [10, 0], [10, 20], [0, 20]], 0);
   assert.equal(dimensions, 2);
@@ -48,7 +48,7 @@ test('makeNormalizeMap: Fill (fit=0) stretches each dimension independently to 0
   assert.deepEqual(JSON.parse(JSON.stringify(pixelMap)), [[0, 0], [65535, 0], [65535, 65535], [0, 65535]]);
 });
 
-test('makeNormalizeMap: Contain (fit=1) preserves aspect ratio, centering the shorter axis', () => {
+test('makeNormalizeMap: Contain (fit=1) preserves aspect ratio, centering the shorter axis', { skip }, () => {
   const normalizeMap = makeNormalizeMap(html);
   // x range 10, y range 20 (y is the larger span) -> x should be centered around 0.5 instead of hitting 0/1
   const { pixelMap } = normalizeMap([[0, 0], [10, 0], [10, 20], [0, 20]], 1);
@@ -60,7 +60,7 @@ test('makeNormalizeMap: Contain (fit=1) preserves aspect ratio, centering the sh
   assert.equal(xs[0], xs[3]); // x=0 column stays symmetric around the same center
 });
 
-test('makeNormalizeMap: repeated calls do not trigger the extracted code\'s own sendMap() side effect', () => {
+test('makeNormalizeMap: repeated calls do not trigger the extracted code\'s own sendMap() side effect', { skip }, () => {
   const normalizeMap = makeNormalizeMap(html);
   // Would throw (sendMap/sendBlob/PacketType undefined in our headless context)
   // on the 2nd+ call if mapperSourceLoaded weren't reset each run.

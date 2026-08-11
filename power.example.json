@@ -1,0 +1,38 @@
+{
+  "_comment": "EXAMPLE ONLY — copy to power.json and replace EVERY number with your own install's. `pbz limit --for-budget --set` writes a hardware brightness cap derived from these figures; running it against someone else's numbers gives you a cap that has nothing to do with your wiring. The values below are from one real 170-pixel WRGB ring on a 160 W 24 V brick, kept as a worked example of the shape rather than a default worth inheriting.",
+
+  "supply_voltage_v": 24,
+
+  "psu": {
+    "model": "Mean Well GST160A24",
+    "rated_watts": 160,
+    "rated_amps": 6.67
+  },
+
+  "protection_chain": {
+    "_comment": "Every series link between the supply and the LEDs, in amps. The effective budget is the SMALLEST of these — the solver reports which one binds. Add or drop links to match your build; the names are free-form and are printed as-is by `pbz power budget`.",
+    "din4_socket_amps": 7.5,
+    "breaker_amps": 15,
+    "ring_wire_amps": 22,
+    "feed_leg_amps": 22,
+    "connector_amps": 32
+  },
+
+  "measured": {
+    "_comment": "MEASURED, not from the strip's nameplate — nameplate figures are routinely optimistic. all_four_max_amps is the whole run with every channel at full, which is what a color-blind brightness cap has to assume. Meter it; don't estimate it.",
+    "measured_date": "2026-07-16",
+    "all_four_max_amps": 11.4,
+    "all_four_max_watts": 273,
+    "w_only_white_amps": 2.9,
+    "w_only_white_watts": 69,
+    "idle_amps": 0.17,
+
+    "channel_bench_w_per_100px": { "r": 37.6, "g": 41.9, "b": 40.7, "w": 40.7 },
+    "_channel_bench_note": "Each channel alone at full, 100 pixels, both ends fed. Only needed by `pbz power` (the live per-pattern estimate), which uses it to model an RGBW strip's W-extraction — min(r,g,b) is routed to the dedicated white element, so a white pixel must not be counted as r+g+b. Drop this block on a plain RGB strip."
+  },
+
+  "pixel_count": 170,
+
+  "margin": 0.95,
+  "_margin_note": "Applied on top of the binding link's raw share of all_four_max_amps, so the cap sits below a link's rated maximum instead of flush against it."
+}

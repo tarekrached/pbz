@@ -1,0 +1,37 @@
+// Shared loader for the captured web UI, used by the hermetic tests.
+//
+// The web UI is Ben Hencke's copyrighted application, so it is NOT committed —
+// `npm run fixture` pulls it off YOUR OWN device into this gitignored path.
+// Tests that need it skip (with a reason) rather than fail when it's absent, so
+// a fresh clone still runs the pure tests without a Pixelblaze on the LAN.
+import zlib from 'node:zlib';
+import { readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+
+const dir = path.join(import.meta.dirname, 'fixtures');
+
+// The firmware the golden bytecode/.pbp snapshots in golden.json were captured
+// against. Compiler output legitimately differs between firmware versions (the
+// compiler ships inside the web UI), so those snapshots only mean anything
+// against this exact version — a fixture from any other one skips instead of
+// producing a false failure.
+export const PINNED_FIRMWARE = 'v3.67';
+
+// Newest captured ui-<ver>.html.gz, or null if none has been captured yet.
+export function loadWebUI() {
+  let names;
+  try { names = readdirSync(dir); } catch { return null; }
+  const hits = names.filter(n => /^ui-.+\.html\.gz$/.test(n)).sort();
+  if (!hits.length) return null;
+  const file = hits[hits.length - 1];
+  const html = zlib.gunzipSync(readFileSync(path.join(dir, file))).toString('utf8').replace(/^﻿/, '');
+  return { html, version: file.slice(3, -'.html.gz'.length), file };
+}
+
+export const CAPTURE_HINT =
+  'no web UI fixture — run `npm run fixture` with a Pixelblaze on the LAN to capture one ' +
+  '(it is not committed: the web UI is the device vendor\'s copyrighted code)';
+
+export function readFixture(name) {
+  return readFileSync(path.join(dir, name), 'utf8');
+}

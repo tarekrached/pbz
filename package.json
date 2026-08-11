@@ -2,7 +2,28 @@
   "name": "pbz",
   "version": "0.1.0",
   "type": "module",
-  "description": "Headless, browser-free, Python-free Pixelblaze library + CLI (compiles patterns too).",
+  "description": "Unofficial command-line tool and JS library for Pixelblaze LED controllers. Compiles patterns headless — no browser, no Python, no dependencies.",
+  "keywords": [
+    "pixelblaze",
+    "led",
+    "ws2812",
+    "ws2814",
+    "addressable-leds",
+    "electromage",
+    "esp32",
+    "cli",
+    "zero-dependencies"
+  ],
+  "license": "MIT",
+  "author": "Tarek Rached",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tarekrached/pbz.git"
+  },
+  "homepage": "https://github.com/tarekrached/pbz#readme",
+  "bugs": {
+    "url": "https://github.com/tarekrached/pbz/issues"
+  },
   "engines": {
     "node": ">=22"
   },
@@ -11,9 +32,19 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "smoke": "node test/smoke.mjs"
+    "smoke": "node test/smoke.mjs",
+    "fixture": "node test/capture-fixture.mjs"
   },
   "exports": {
     ".": "./lib/pixelblaze.mjs"
-  }
+  },
+  "files": [
+    "pbz.mjs",
+    "lib/",
+    "examples/",
+    "pb.config.example.json",
+    "power.example.json",
+    "README.md",
+    "LICENSE"
+  ]
 }
