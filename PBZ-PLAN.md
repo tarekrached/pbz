@@ -827,6 +827,31 @@ the fix surface before a first release:
 5. **`matchBraces` doesn't understand regex literals** (`compiler.mjs`). Latent: verified not
    biting on any current fixture, but a web UI containing `/}/ ` in a regex would break
    extraction.
+6. **The power ESTIMATOR path is unvalidated**, unlike the cap path which now is. Do this one
+   first: deleting `measured.channel_bench_w_per_100px` crashes with "Cannot read properties of
+   undefined (reading 'r')", and `power.example.json` **explicitly tells RGB-strip owners to
+   delete that block**. A documented user action that crashes the tool. Missing `idle_amps` or
+   `supply_voltage_v`, or a `pixel_count` of 0, each print NaN.
+7. **`getState()` still tolerates null on both of its reads** and returns
+   `{vars:{}, name:undefined, …}`, so `pbz get` prints "active: undefined (undefined)" against a
+   silent device. The one silent-null path Chunk 24 left uncovered.
+8. **Zero-frame `save()` throws, but only after the pattern is already running on the device**,
+   and the message doesn't say so. A user who hits it is left with an unsaved pattern live on the
+   wall and no indication that happened.
+9. **Cap eviction can still produce a silent short read in `collectChunks`** — reproduced at
+   `maxQueued` 3; needs >256 mid-transfer binary frames in practice. The surviving frame's flag
+   bits would catch it (first-chunk bit clear on a frame that should start a transfer).
+10. **`samplePreview(n)` for n > `maxQueued`** burns the whole 6 s window and returns 256 frames
+    with no error. Nothing ties the public `n` to the queue cap.
+11. **`getInfo()` now fails as a whole** (`Promise.all`) if the status cadence gaps past 3 s, on a
+    device documented to stall for 107 s. Intended trade — a composite that silently returns
+    partial data is worse — but recorded because it is a behavior change.
+
+**Explicitly UNTESTED, don't assume otherwise:** `list()` against a device with **zero saved
+patterns**. Chunk 24 moved it from a timeout-terminated read to a flag-terminated one, and the
+empty case would be the one where no frame carries the last-chunk bit. No zero-pattern device was
+available on this rig to check it. Types 4, 6 and 7 were all confirmed live to set the flag on a
+NON-empty response (`pbz export` round-tripped a complete jpeg, `ffd8`…`ffd9`).
 
 ### Chunk 21 — per-host CLI lock (contingent — build only on observed need)
 **The technical fix for cross-process bursts.** Chunk 20's shared connection is per-process;
