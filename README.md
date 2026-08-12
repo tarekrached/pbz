@@ -9,8 +9,8 @@ pbz set sliderSpeed=0.8          # tune it while it runs
 pbz save patterns/sweep.js       # persist it, with a real preview thumbnail
 ```
 
-I built this for a 170-pixel WRGB ring around our living room, because my kid and
-I wanted to keep patterns in git and iterate from a text editor instead of a
+I built this for a 170-pixel WRGB ring on some LED strips at home, because I
+wanted to keep patterns in git and iterate from a text editor instead of a
 browser tab. It grew a lot of edges. It is not affiliated with ElectroMage.
 
 <!-- TODO(demo): drop the wall GIF here. `pbz run` on a pattern, then a `pbz set` tweak. -->

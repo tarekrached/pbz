@@ -142,15 +142,14 @@ directory form.
 
 ## Decisions already made (don't re-litigate)
 
-- **Name: `pbz`** (bin + npm package). `pbz` is **free on npm** (checked). We deliberately
-  leave `pixelblaze` unclaimed — Ben Hencke (Pixelblaze's creator) will likely want it.
-  `pb` is taken on npm (an OSX-pasteboard tool) and clashes with a Pushbullet CLI — avoid.
+- **Name: `pbz`** (bin + npm package). `pbz` is **free on npm** (checked). `pixelblaze` is
+  deliberately left unclaimed: it isn't this project's name to take. `pb` is taken on npm (an
+  OSX-pasteboard tool) and clashes with a Pushbullet CLI, so avoid it.
 - **Two deliverables from one codebase:** a `Pixelblaze` **class** you can `import` (the
   valuable part — a headless, browser-free, Python-free API that *also compiles patterns*),
-  and a thin **CLI** on top. Advertise it as "`pixelblaze-client`, but native JS, and it
-  compiles headless." Neither Firestorm nor the Python client can compile without a browser —
-  that's the differentiator, and it makes the library a viable backend for Firestorm-like
-  multi-device controllers.
+  and a thin **CLI** on top. Neither Firestorm nor the Python client can compile without a
+  browser, which is what makes the library usable as a backend for a Firestorm-like
+  multi-device controller.
 - **Zero runtime deps stays a hard requirement** (Node ≥ 22 built-ins: `fetch`,
   `WebSocket`, `zlib`, `dgram`; the one vendored file is `lib/jpeg-encoder.cjs`).
 - Keep the escape-hatch philosophy (the brain must stay swappable): **no raw filesystem CLI verbs**
@@ -161,6 +160,11 @@ directory form.
 
 ## Target structure
 
+*Historical: this is the layout as planned while the code still lived in a `tools/`
+subdirectory of another repo. That directory is this repository's root now, so read the
+paths below as `tools/` → `./`. Left as written rather than restated, because it records
+what Chunks 0 and 1 actually did.*
+
 ```
 tools/
   package.json         # NEW: name "pbz", type module, bin, exports, engines >=22
@@ -168,7 +172,7 @@ tools/
   pb.config.json
   power.json           # NEW (Chunk 11): PSU/breaker/wire/connector chain + measured draw
   README.md            # rewrite for pbz
-  PBZ-PLAN.md          # this file (delete when done)
+  PBZ-PLAN.md          # this file
   lib/
     pixelblaze.mjs     # NEW: class Pixelblaze — the importable API
     compiler.mjs       # NEW: fetchWebUI, makeCompiler, makeLZ, makeLZDecompress, makeNormalizeMap
@@ -317,8 +321,8 @@ and doing only the text upload leaves the render geometry unchanged:
   2. **Persist the source.** POST the text as a Blob to `/edit` (filename `/pixelmap.txt`),
      then ws `{savePixelMap:true}` so it survives reboot and reloads into the Mapper editor.
 - CLI: `pbz map get > map.js`, `pbz map set map.js`.
-- **Bonus:** the firmware ships a `ring` map example — our installed geometry is a ring, so a
-  committed `map.js` + `pbz map set` makes the 41/44/41/44 layout reproducible.
+- **Bonus:** the firmware ships a `ring` map example, and a ring is the geometry this was
+  built against, so a committed `map.js` + `pbz map set` makes the layout reproducible.
 - **Acceptance:** `pbz map get` returns the current source; after `pbz map set map.js`, the
   Mapper tab shows the new source **and** a mapped pattern actually renders against the new
   geometry (not merely that the text persisted). A golden-bytes-style test on the packed type-8
@@ -358,7 +362,7 @@ and doing only the text upload leaves the render geometry unchanged:
     both from **cwd**, so a project keeps its own copies after extraction.
   - **Extraction:** new repo `pbz`, carrying the `pbz: Chunk N` commit trail across (the
     per-chunk history is part of the point of publishing). README provenance one-liner:
-    "built for a living-room LED installation."
+    "built for some LED strips at home."
   - **LICENSE: MIT.** Keep the Adobe BSD header in `jpeg-encoder.cjs`; attribution note that
     the compiler/LZString are Ben Hencke's code fetched from your own device at runtime.
   - **README:** rewrite of `tools/README.md` in the same hobbyist voice — lead with the demo
@@ -691,7 +695,7 @@ cleaned up over HTTP alone.) Two library defects made this worse than it needed 
 > 107 s stall just before); HTTP **never self-healed** (the "~20 min" below is wrong —
 > recovery followed a power cycle ~46–48 min in); and the re-wedge took ~6 min under ~8
 > connections, one exiting with its ws socket unclosed (not "~10 min under a single batched
-> script"). Figures below left as written; read the incident file first.
+> script"). Figures below are left as written; the corrections in this note supersede them.
  Chunk 16's live
 acceptance wedged this device twice in one session. First trigger was ours and textbook: a single
 shell line chaining ~8 separate `pbz` invocations back-to-back — rapid *sequential* connect/close
