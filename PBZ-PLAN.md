@@ -554,11 +554,23 @@ so zero-deps holds with no archive code.
     `55` over ws.** Anything reading the device's files directly must not assume the wire units.
   - **`pause` / `resume` / `next` all verified.** `next` needs a longer observation window than
     it looks: a `getState()` 1.2 s later still showed the old pattern, while the device had in
-    fact advanced. Do not assert on `next` inside ~2 s.
+    fact advanced. Measured by polling on v3.67: **~1360 ms**. Don't assert on `next` inside ~2 s.
+  - **RE-VERIFIED 2026-08-11 on v3.67**, after the board was updated from v3.51. Same results
+    on every item, including the seconds/ms split. The two firmwares agree.
   - **`lastProgramPath` in `config2.json` is NOT the live active pattern.** It lagged by a full
     pattern for at least 8 s after an `activate()`, while `getState()` reported correctly. It is
     a boot pointer persisted on a cadence; use `getState()` for the live answer. This produced a
     false "restore failed" alarm before it was understood.
+  - **The compiler is byte-identical across v3.51 and v3.67, and the v3.67 web UI is
+    byte-identical between the dead board and the replacement.** Captured the web UI off the
+    board before and after the firmware update (sha256 `b56656a9…` for 3.51, `a6f8424e…` for
+    3.67) and compiled the fixture against each: bytecode, `.pbp` and exports all match, and all
+    still match the committed `golden.json` — which was captured from the PRE-refactor CLI. The
+    fresh 3.67 capture also hashes identically to the one vendored from the dead board. So
+    `golden.json` is **left untouched**: its tie back to pre-refactor bytes is intact and now
+    confirmed against a live current-firmware device, and re-capturing it would have traded that
+    for nothing. **Settled, don't re-litigate:** its `bytecodeHex`/`pbpHex` stay in the repo —
+    adjudicated not vendor IP, being the compiled output of this project's own fixture source.
   - **The 150 ms readback race did not reproduce on v3.51.** Bumped to 350 ms anyway (see the
     method's comment): with no ack there is nothing to synchronise on, and the failure mode is a
     silently-wrong read rather than an error.
@@ -799,7 +811,7 @@ WebSocket at `ws://<host>:81`. `save:true` persists to flash; `save:false` is li
 | Sequencer mode | `{"sequencerMode": 0\|1\|2}` (0 Off, 1 ShuffleAll, 2 Playlist) |
 | Sequencer run/pause | `{"runSequencer": <bool>}` (the UI play/pause button) |
 | Sequencer next | `{"nextProgram": true}` |
-| Shuffle interval | `{"sequenceTimer": <n ≥ 1>}` — plain config key, **SECONDS** on the wire (UI refuses < 1). Verified live 2026-08-11: the persisted `config2.json` holds the same value in **milliseconds** (ws 20 → file 20000), and `maxBrightness` splits the same way (ws `55` → file `0.55`). Don't assume wire units when reading the device's own files. |
+| Shuffle interval | `{"sequenceTimer": <n ≥ 1>}` — plain config key, **SECONDS** on the wire (UI refuses < 1). Verified live 2026-08-11 on **v3.51 and again on v3.67**: the persisted `config2.json` holds the same value in **milliseconds** (ws 20 → file 20000), and `maxBrightness` splits the same way (ws `55` → file `0.55`). Don't assume wire units when reading the device's own files. |
 | Picker controls | `setControls` values may be 3-arrays: `{"hsvPicker<Name>": [h,s,v]}` / `rgbPicker` `[r,g,b]`, components 0..1 |
 | Get playlist | `{"getPlaylist": "_defaultplaylist_"}` |
 | Set playlist | playlist object, `items:[{"id","ms"}]` |

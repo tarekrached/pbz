@@ -245,9 +245,10 @@ Honest list, not a roadmap I'm promising to finish.
   designed but not built, because the board wasn't in hand.
 - **No cross-process locking.** One process holds one connection, but two
   terminals running `pbz` at once are two clients. See Device etiquette.
-- **Verified against firmware v3.51 and v3.67 only.** Those are the two boards
-  this was built against. The compiler is pulled off your device so it tracks
-  whatever you run, but the wire formats were not checked past those.
+- **Wire formats verified against firmware v3.67**, on two different boards, with
+  the sequencer and config paths also confirmed on v3.51. The compiler is pulled
+  off your device so compiling tracks whatever you run, but the message formats
+  were not checked past those versions.
 - **No CI, not on npm.** TypeScript declarations do ship
   (`lib/pixelblaze.d.mts`), hand-written and drift-guarded by `npm test`, but
   the `.mjs` sources carry no JSDoc.
