@@ -45,6 +45,7 @@ protects — done); all are buildable before the sensor board lands (~week of 20
 - [ ] **21 — per-host CLI lock** (S–M — **contingent**: only if parallel-invocation churn recurs)
 - [x] **22 — TypeScript declarations** (S — added 2026-08-11, post-Chunk-10)
 - [x] **23 — signature guard + JSDoc doc blocks** (S — added 2026-08-11)
+- [x] **24 — response-correlation & fail-loud pass** (M — added 2026-08-11, from an independent review)
 
 Suggested order by value: **0, 1, 2, 11, 4, 3, 7, 5, 6, 12, 13, 8, 9, 10.**
 Remaining, by value: **20, 14, 15 done**; **16 implemented but unverified** (`seq time` still
@@ -575,15 +576,19 @@ so zero-deps holds with no archive code.
   - **The 150 ms readback race did not reproduce on v3.51.** Bumped to 350 ms anyway (see the
     method's comment): with no ack there is nothing to synchronise on, and the failure mode is a
     silently-wrong read rather than an error.
-  - **The ws server wedged during the first attempt, and it cost a diagnosis.** That run made
-    ~30 messages over ONE connection in ~15 s and closed cleanly; a fresh connect a minute later
-    timed out while HTTP stayed healthy. Its `getConfig()` reads had been returning consistently
-    stale values, which looked exactly like a message-queue bug in `waitText` — **it was not.**
-    On the rebooted device the same read agreed with HTTP immediately after a write. **The stale
-    reads were a symptom of a degrading ws server, not a library defect.** Recovery was
-    `POST /reboot` over the surviving HTTP, per the README playbook, and it worked first time.
-    Lesson for anyone testing device I/O: get an independent oracle (here `GET /config2.json`)
-    before concluding the client is wrong.
+  - **The ws server wedged during the first attempt.** That run made ~30 messages over ONE
+    connection in ~15 s and closed cleanly; a fresh connect a minute later timed out while HTTP
+    stayed healthy. Recovery was `POST /reboot` over the surviving HTTP, per the README
+    playbook, first time.
+  - ⚠️ **CORRECTION (2026-08-11, later the same evening).** That run's `getConfig()` reads were
+    returning stale values, and this note originally concluded "a symptom of a degrading ws
+    server, not a library defect." **That was wrong.** It was Chunk 24's queue bug: the first
+    script called `getState()` early, which orphaned a settings frame that every later
+    `getConfig()` then spliced; the second script never called `getState()`, so nothing was
+    orphaned and the bug "didn't reproduce". Two runs differing in a way that looked like device
+    health were actually differing in call order. Recorded because the reasoning was seductive
+    and wrong: an independent oracle (`GET /config2.json`) correctly showed the CLIENT was
+    lying, and the conclusion drawn from it — that the client was fine — inverted that.
 
 ### Chunk 17 — sensor board: live monitor
 **The bring-up tool for the sensor board (arriving ~week of 2026-07-20) — build it first.
@@ -769,6 +774,59 @@ verification a repeatable part of the repo, and closes the hover-docs gap in the
     then, as one atomic change, and the hand-written declarations are deleted in the same step.
   - Private methods and file headers keep `//`. Only public members got blocks: 53 across
     `lib/`, 37 of them in `pixelblaze.mjs`.
+
+### Chunk 24 — response-correlation & fail-loud pass
+From an independent fresh-context review of `lib/` before publishing. The findings were one
+layer, not scattered: a prefix-matched queue nothing drained, plus timeouts treated as success.
+On a tool that writes to hardware and produces files called "backups", the failure mode is
+**confident wrong answers**, which is the worst kind for this project to ship with.
+
+- **The queue moved to `lib/queue.mjs` and is now correlated.** Every message carries a sequence
+  number; a caller takes `mark()` BEFORE sending and waits only for messages after it, so a
+  frame already queued can never satisfy a later request. Queues are bounded (256) — the
+  unclaimed ~1/s status frames grew forever otherwise. Split out from the socket specifically so
+  it could be tested without one: `test/queue.test.mjs`, 12 hermetic tests.
+- **Confirmed live which frames a request emits**, since the review flagged it as unverifiable
+  from the code: `{getConfig:true}` produces **both `activeProgram` and `name`**. So `getState()`
+  (which consumes `vars` + `activeProgram`) orphaned the settings frame, and `getConfig()` (which
+  consumes `name`) orphaned the active-program frame. Each now claims both.
+- **`getStatus()` waits for the NEXT status frame** rather than taking the oldest queued one,
+  which on a long-lived connection was as stale as the connection was old.
+- **Writes fail loudly.** `waitText` resolves null on timeout and `run`/`save`/`activate`/
+  `setControls` discarded it, printing "saved & activated" after the device dropped mid-command.
+  Reads already threw; writes now agree with them.
+- **Chunked reads end on the framing's own last-chunk flag** (bit 4), not on a receive timeout.
+  A gap longer than the timeout silently truncated: a short `list()` misread as "no pattern
+  matching", a partial `getSources()` threw an opaque decompress error, a truncated jpeg was
+  written without complaint. This device is documented stalling for 107 s.
+- **`power.json` is validated.** A missing `all_four_max_amps` derived a NaN cap and sent
+  `{"maxBrightness":null}`; a zero derived Infinity, clamped to 100, i.e. *no cap*, presented as
+  "derived". A quoted `"7.5"` silently deleted a chain link — raising the cap if it was the
+  binding one. All now throw.
+- **`estimateDraw([])` and `save()` with zero preview frames throw** instead of reporting
+  `-Infinity A` and writing a pattern whose empty thumbnail breaks the web UI.
+- **`exp` is on BOTH the config and status frames** (verified live, `exp=0` on this rig), so
+  `getInfo()`'s expansion decode was never broken. No change needed; recorded so it isn't
+  re-investigated.
+- **Acceptance:** 49 hermetic tests green; live regression check confirms `getState()` → write →
+  read now returns the written value where it previously returned the pre-write one.
+- **Size:** M.
+
+**Known, recorded, NOT fixed** — deliberately deferred as post-publish work rather than widening
+the fix surface before a first release:
+1. **Post-open ws errors are swallowed.** `onerror` only rejects the already-settled `opened`
+   promise, and waiters get no close notification, so a mid-exchange drop spins out full timeouts
+   and then `c.json()` throws a raw `InvalidStateError`. `save()` can push bytecode and fail
+   before activation with no coherent error.
+2. **`import()` trusts the `.epe`.** A foreign-length `id` corrupts the fixed 17-byte
+   putSourceCode header; a missing `name` crashes inside `stableId(undefined)`.
+3. **`pbz set` has no validation on the non-picker branch** — `pbz set sliderSpeed` sends
+   `{"sliderSpeed":null}`. Every sibling branch validates.
+4. **`discover --ms` is unvalidated** — `--ms=abc` becomes `setTimeout(NaN)` (fires immediately),
+   bare `--ms` becomes 1 ms; both print "(0 devices found)".
+5. **`matchBraces` doesn't understand regex literals** (`compiler.mjs`). Latent: verified not
+   biting on any current fixture, but a web UI containing `/}/ ` in a regex would break
+   extraction.
 
 ### Chunk 21 — per-host CLI lock (contingent — build only on observed need)
 **The technical fix for cross-process bursts.** Chunk 20's shared connection is per-process;

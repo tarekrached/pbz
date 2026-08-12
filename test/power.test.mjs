@@ -100,3 +100,43 @@ test('estimateDraw reports peak/mean across frames and % of the binding link', (
   assert.equal(est.bindingLink, binding.name);
   assert.ok(Math.abs(est.peakPctOfBudget - (est.peakAmps / binding.amps) * 100) < 1e-9);
 });
+
+// --- validation guards (review findings 7 and 8) ---
+// Every number here feeds a hardware brightness cap, so a bad one must stop the
+// calculation. Unchecked, these produced a NaN cap sent to the device as
+// {"maxBrightness":null}, or an Infinity one clamped to 100 (no cap at all)
+// presented as "derived" with no warning.
+
+test('a missing all_four_max_amps throws instead of deriving a NaN cap', () => {
+  const bad = { ...power, measured: { ...power.measured, all_four_max_amps: undefined } };
+  assert.throws(() => solveCapPercent(bad), /all_four_max_amps must be a positive number/);
+});
+
+test('all_four_max_amps of 0 throws instead of silently becoming a 100% no-op cap', () => {
+  const bad = { ...power, measured: { ...power.measured, all_four_max_amps: 0 } };
+  assert.throws(() => solveCapPercent(bad), /all_four_max_amps must be a positive number/);
+});
+
+test('a missing psu.rated_amps throws', () => {
+  assert.throws(() => budgetChain({ ...power, psu: { model: 'x' } }), /psu\.rated_amps/);
+});
+
+test('a QUOTED chain value throws rather than silently deleting the link', () => {
+  // The dangerous case: if the quoted link was the binding one, skipping it
+  // raises the derived cap with nothing on screen to say so.
+  const bad = { ...power, protection_chain: { ...power.protection_chain, din4_socket_amps: '7.5' } };
+  assert.throws(() => budgetChain(bad), /din4_socket_amps must be a positive number/);
+});
+
+test('_-prefixed chain keys are still treated as commentary, not as bad values', () => {
+  const ok = { ...power, protection_chain: { _note: 'free text', inline_fuse_amps: 3 } };
+  assert.equal(budgetChain(ok).binding.amps, 3);
+});
+
+test('a negative margin throws', () => {
+  assert.throws(() => solveCapPercent({ ...power, margin: -1 }), /margin must be a positive number/);
+});
+
+test('estimateDraw on zero sampled frames throws instead of reporting -Infinity', () => {
+  assert.throws(() => estimateDraw([], power), /no preview frames were sampled/);
+});
