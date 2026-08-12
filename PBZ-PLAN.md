@@ -10,7 +10,7 @@ Python `pixelblaze-client`, which differs in several places (noted inline).
 
 **This file is the build's task tracker.** Check a chunk's box **in the same commit that
 implements it** — the box is just staged alongside the code, so it's one commit, not two.
-Use commit subject **`pbz: Chunk N — <title>`**; then `git log --oneline -- tools/PBZ-PLAN.md`
+Use commit subject **`pbz: Chunk N — <title>`**; then `git log --oneline -- PBZ-PLAN.md`
 is the authoritative SHA-per-chunk record. Don't write SHAs into this file (that would need a
 second commit to capture a commit's own hash — the clunk we're avoiding). Chunks 0→1 are
 sequential; 2–9 and 11–13 are independent (pick by value; do 13 before 8); 10 is last (packaging,
@@ -66,7 +66,7 @@ place for it, not a fourth one).
 
 Drive it one or two chunks per session. Paste to a fresh Sonnet:
 
-> Read `tools/PBZ-PLAN.md` — it's the task tracker for evolving pbpush into `pbz` (a JS
+> Read `PBZ-PLAN.md` — it's the task tracker for evolving pbpush into `pbz` (a JS
 > library + CLI for Pixelblaze). Do **Chunk 0, then Chunk 1**, and stop. (Later sessions:
 > name the next single chunk, e.g. "do Chunk 2".)
 >
@@ -99,7 +99,7 @@ there, not test-first.
 Use the built-in **`node:test` + `node:assert`** only (keeps the zero-deps invariant). No jest/
 vitest, no coverage targets, no WebSocket mocking framework.
 
-Run tests with the package scripts (from `tools/`): **`npm test`** runs the hermetic suite
+Run tests with the package scripts (from the repo root): **`npm test`** runs the hermetic suite
 (`node --test test/*.test.mjs`); **`npm run smoke`** runs the live read-only sweep. Name every
 test file `*.test.mjs` so `npm test` picks it up. Note: `node --test <dir>` (a bare directory)
 errors on some Node versions — always go through `npm test` or a `*.test.mjs` path, never the
@@ -110,14 +110,16 @@ directory form.
    (the device may still accept subtly-wrong bytecode). Before refactoring: compile a fixture
    `patterns/_fixture.js` and snapshot the exact bytecode + `.pbp` hex; after, assert byte-for-
    byte identical. **Make it hermetic:** vendor a captured `index.html.gz` as
-   `tools/test/fixtures/ui-v3.67.html.gz` and point `makeCompiler`/`makeLZ` at it in tests, so
+   `test/fixtures/ui-v3.67.html.gz` and point `makeCompiler`/`makeLZ` at it in tests, so
    the compile path tests run offline against a pinned firmware — no LAN, fast, repeatable.
+   *(Superseded by Chunk 10: the capture is no longer committed. `npm run fixture` pulls one
+   off your own device into a gitignored path, and the tests skip when it's absent.)*
    Also snapshot `stableId('foo')` — it must never change (re-saves would stop updating in place).
 2. **State-restore harness for device tests.** Snapshot active pattern + brightness at start,
    restore at end. Use a dedicated throwaway pattern name `__pbz_test` for save/delete so real
    patterns are never clobbered. **Never** exercise `reboot`, `limit`/`maxBrightness`, or
    `set-config` in a loop without restoring — they touch the power-safety cap.
-3. **Read-only smoke sweep.** `npm run smoke` (`tools/test/smoke.mjs`) runs the read-only
+3. **Read-only smoke sweep.** `npm run smoke` (`test/smoke.mjs`) runs the read-only
    commands that exist so far (`list · get`, extended to `config · info · ping` as Chunks
    4/7/9 land) — no mutation, ~2s. Run it at the start of every session; it catches
    connection/parse breakage instantly.
@@ -493,7 +495,7 @@ so zero-deps holds with no archive code.
   run, not a code defect: after a `restore`-triggered reboot, verify with the **same**
   `Pixelblaze` instance/connection rather than opening a fresh one immediately after — opening
   a second websocket right after the first's post-reboot reconnect hit exactly the client-budget
-  contention `tools/README.md` "Device etiquette" already warns about (transient `websocket:
+  contention `README.md` "Device etiquette" already warns about (transient `websocket:
   connection failed`; resolved by reusing one connection, no code change needed).
 
 ### Chunk 15 — color-picker controls in `set`
@@ -688,7 +690,7 @@ cleaned up over HTTP alone.) Two library defects made this worse than it needed 
  Chunk 16's live
 acceptance wedged this device twice in one session. First trigger was ours and textbook: a single
 shell line chaining ~8 separate `pbz` invocations back-to-back — rapid *sequential* connect/close
-churn, exactly what `tools/README.md`'s "Batch, don't loop" forbids. But the compounding factor,
+churn, exactly what `README.md`'s "Batch, don't loop" forbids. But the compounding factor,
 not spotted until hours in, was that **a home-automation integration was polling the device
 throughout**. A second long-lived ws consumer was on the device for the entire
 session, so the "at most one long-lived consumer" rule was being violated the whole time while
@@ -771,7 +773,7 @@ verification a repeatable part of the repo, and closes the hover-docs gap in the
 ### Chunk 21 — per-host CLI lock (contingent — build only on observed need)
 **The technical fix for cross-process bursts.** Chunk 20's shared connection is per-process;
 separate sessions, parallel agents, and shell loops of `pbz` invocations still each open their
-own socket, and only *guidance* (tools/README.md "Device etiquette & recovery") restrains them.
+own socket, and only *guidance* (README.md "Device etiquette & recovery") restrains them.
 Guidance mitigates but doesn't enforce. **Contingent:** land this only when parallel-invocation
 churn is actually observed to recur — not speculatively; it's process machinery the single-user
 CLI may never need.

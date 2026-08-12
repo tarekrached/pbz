@@ -281,11 +281,21 @@ normalization are all his code, fetched from your device at runtime. pbz is
 unofficial and unaffiliated. If anything here steps on toes I'm happy to change
 it.
 
-Prior art worth knowing: the Python
-[`pixelblaze-client`](https://github.com/zranger1/pixelblaze-client), which is
-more mature in places. It can't compile patterns, and a few wire formats differ
-from what this firmware actually does (`reboot` is an HTTP POST, the brightness
-cap key is `maxBrightness`).
+Prior art worth knowing:
+
+- The Python [`pixelblaze-client`](https://github.com/zranger1/pixelblaze-client),
+  which is more mature in places. It can't compile patterns, and a few wire
+  formats differ from what this firmware actually does (`reboot` is an HTTP POST,
+  the brightness cap key is `maxBrightness`).
+- [`pbbeacon`](https://github.com/erkyrath/pbbeacon), which compiles a
+  declarative pattern language down to Pixelblaze JS, and ships a small CLI for
+  listing and switching patterns. It solves a genuinely different problem:
+  pbbeacon generates *source* you then load, while pbz takes source you already
+  have and produces the *bytecode* the device runs. Heads up that it also uses
+  the `.pbb` extension, for its own script files rather than for backups.
+- [Firestorm](https://github.com/simap/Firestorm), the official multi-device
+  console. It forwards already-compiled patterns; the library half of pbz could
+  serve as a backend for something similar.
 
 MIT licensed. See [LICENSE](LICENSE), which also covers the one vendored file
 (`lib/jpeg-encoder.cjs`, Adobe BSD).
