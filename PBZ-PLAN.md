@@ -373,8 +373,8 @@ and doing only the text upload leaves the render geometry unchanged:
     this rig's part names (Kycon socket, Wago lever-nut, "16 AWG ring bus") and `config --check`
     hardcoded `WRGB`/`170`. Both are now data: the chain is read straight out of
     `protection_chain`'s keys (so a user's links print as they wrote them, and adding one needs no
-    code change), and `--check` asserts an `expect` block in `pb.config.json`. Decoupling turned
-    out to mean an API improvement, not a search-and-replace.
+    code change), and `--check` asserts an `expect` block in `pb.config.json`. Generalizing away
+    from one installation turned out to mean an API improvement, not a search-and-replace.
   - **`power.json` ships as `power.example.json`, not as a working default** — a deviation from
     the amendment above, made deliberately. A shipped `power.json` means a fresh clone can run
     `limit --for-budget --set` and get a cap derived from *someone else's* brick. The CLI now says
@@ -544,8 +544,7 @@ so zero-deps holds with no archive code.
     library callers, and the first thing that made this chunk look broken when it wasn't. Left
     as-is rather than re-timing code that couldn't be re-verified live mid-incident: bump to
     ~300–400 ms and confirm once the device is back.
-- **ACCEPTANCE COMPLETE 2026-08-11**, against the *replacement* board (chipId redacted) on
-  **firmware v3.51** — note that is OLDER than the v3.67 this plan's Appendix was verified
+- **ACCEPTANCE COMPLETE 2026-08-11**, against a replacement board on **firmware v3.51** — note that is OLDER than the v3.67 this plan's Appendix was verified
   against, so treat any disagreement here as version-specific until re-checked.
   - **`seq time` verified, and the seconds-vs-ms question is now settled by the firmware
     itself.** Writing `{sequenceTimer: 20}` over ws leaves **`20000` in `config2.json`**, and 25

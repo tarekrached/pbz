@@ -7,7 +7,19 @@ import { Pixelblaze } from '../lib/pixelblaze.mjs';
 import { resolveHost } from '../lib/config.mjs';
 
 const host = process.env.PB_HOST || resolveHost();
-if (!host) throw new Error('No host: set $PB_HOST or add pb.config.json {"host":"…"}');
+if (!host) {
+  console.error('smoke: no host — set $PB_HOST or add pb.config.json {"host":"…"}');
+  process.exit(1);
+}
+
+// A sweep against an unreachable device is an ordinary outcome (no Pixelblaze
+// on the LAN, wrong address, device asleep). Report it as one line rather than
+// an unhandled rejection: the stack trace tells a newcomer nothing and reads
+// like pbz is broken.
+process.on('unhandledRejection', (err) => {
+  console.error(`\nsmoke: FAILED against ${host} — ${err?.message ?? err}`);
+  process.exit(1);
+});
 const pb = new Pixelblaze(host);
 
 process.stdout.write(`smoke: list … `);
