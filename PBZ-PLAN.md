@@ -44,6 +44,7 @@ protects — done); all are buildable before the sensor board lands (~week of 20
 - [x] **20 — connection hygiene** (M — open-timeout + shared connection; born of a live wedge 2026-07-19)
 - [ ] **21 — per-host CLI lock** (S–M — **contingent**: only if parallel-invocation churn recurs)
 - [x] **22 — TypeScript declarations** (S — added 2026-08-11, post-Chunk-10)
+- [x] **23 — signature guard + JSDoc doc blocks** (S — added 2026-08-11)
 
 Suggested order by value: **0, 1, 2, 11, 4, 3, 7, 5, 6, 12, 13, 8, 9, 10.**
 Remaining, by value: **20, 14, 15 done**; **16 implemented but unverified** (`seq time` still
@@ -700,6 +701,35 @@ the valuable half and a consumer currently gets no completion on ~30 methods.
     v3.67 plus `[key: string]: unknown`, and every field is optional, because the set varies
     with firmware and hardware. A declaration that invents fields is worse than none: the
     editor will autocomplete something the device never sends.
+
+### Chunk 23 — signature guard + JSDoc doc blocks
+Chunk 22's declarations were verified once, by hand, in a throwaway directory. This makes that
+verification a repeatable part of the repo, and closes the hover-docs gap in the sources.
+- `test/types/{consumer,negative}.ts` + tsconfig; `npm run typecheck` runs them.
+- **Zero devDependencies, deliberately.** TypeScript is caller-supplied; the script prints an
+  install hint and exits 0 when absent. `npm install` in a fresh clone stays a no-op, which is
+  the property the whole no-build design trades on.
+- `//` -> `/** */` on public members in `lib/*.mjs`. Prose unchanged, no type tags.
+- **Acceptance:** typecheck passes; loosening any declared signature makes it fail; it degrades
+  cleanly with no compiler installed.
+- **Size:** S.
+- **Landed 2026-08-11.** Decisions and findings:
+  - **The negative file uses `@ts-expect-error`, not an inverted exit code.** A guard that only
+    ever passes is not a guard: with the directive, a signature that gets LOOSER makes the
+    assertion stale and TypeScript reports "Unused '@ts-expect-error' directive". Verified by
+    widening `setSequencerMode(0|1|2)` to `number` and watching typecheck fail on exactly that
+    line, then reverting. Nine assertions, including that `_`-prefixed internals stay unreachable.
+  - **`@types/node` is required too, not just `tsc`.** The declarations return `Buffer`, so with
+    `skipLibCheck: false` the check cannot run without Node's types. The hint names both.
+  - **Comments inside `compilerOptions` must be real JSONC comments.** A `_comment` KEY there is
+    rejected as an unknown compiler option (it is tolerated at the top level, which is what made
+    this look like it would work).
+  - **The JSDoc pass is prose-only and stays that way.** Type tags in the `.mjs` would compete
+    with the `.d.mts` for the same job with nothing checking they agree. If this ever moves to
+    JSDoc-as-source (generating the `.d.mts`, the Preact/Svelte pattern), the tags get written
+    then, as one atomic change, and the hand-written declarations are deleted in the same step.
+  - Private methods and file headers keep `//`. Only public members got blocks: 53 across
+    `lib/`, 37 of them in `pixelblaze.mjs`.
 
 ### Chunk 21 — per-host CLI lock (contingent — build only on observed need)
 **The technical fix for cross-process bursts.** Chunk 20's shared connection is per-process;

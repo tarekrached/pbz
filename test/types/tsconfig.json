@@ -1,0 +1,23 @@
+// Used only by `npm run typecheck`. Nothing in this repo compiles: the .mjs
+// sources ship as-is and lib/pixelblaze.d.mts is hand-written. This config
+// exists to prove those declarations are right.
+{
+  "compilerOptions": {
+    "noEmit": true,
+    "strict": true,
+    "target": "ES2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+
+    // Deliberately OFF. The whole point is to check lib/pixelblaze.d.mts
+    // itself, which skipLibCheck would exclude.
+    "skipLibCheck": false,
+
+    // OFF on purpose: consumer.ts binds results to typed locals to assert
+    // their types, and negative.ts binds deliberately-wrong ones. Unused is
+    // the normal state in both files.
+    "noUnusedLocals": false
+  },
+  "files": ["consumer.ts", "negative.ts"]
+}

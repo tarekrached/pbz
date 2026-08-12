@@ -215,6 +215,7 @@ about preventing a melt.
 
 ```sh
 npm test              # hermetic, offline
+npm run typecheck     # verify the TypeScript declarations (needs your own tsc)
 npm run smoke         # read-only live sweep against a real device (~2s)
 npm run fixture       # capture your device's web UI so the offline tests can run
 ```
@@ -227,6 +228,12 @@ gitignored path; without it those tests skip with a message rather than fail.
 The golden-bytes test is a byte-for-byte characterization of the compile path,
 pinned to firmware v3.67. A fixture from any other version skips it, because
 compiler output legitimately differs between firmware versions.
+
+`npm run typecheck` checks `lib/pixelblaze.d.mts` against `test/types/`: a
+consumer file that must compile, and a negative file whose every line must NOT,
+asserted with `@ts-expect-error` so a loosened signature fails the check instead
+of quietly passing. TypeScript is not a devDependency, so `npm install` stays a
+no-op; supply your own compiler or skip it.
 
 ## Known gaps
 

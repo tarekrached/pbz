@@ -21,13 +21,25 @@ Everything else:
   vendor's copyrighted application and must never be committed.
 - The `Pixelblaze` class takes a host in its constructor and knows nothing about
   argv or config files. Host resolution belongs to the CLI.
-- **Add a public method, declare it in `lib/pixelblaze.d.mts`.** `npm test`
-  compares the declared member set against the real one and fails if they
-  diverge, but it cannot check that a *signature* is right. If you change one,
-  verify with a TypeScript compiler you supply yourself (there is no devDep):
-  point `tsc --strict --noEmit --module nodenext` at a file that imports the
-  class and uses the method. Declare only what the device was actually observed
-  to send; the read methods use an index signature for the rest, deliberately.
+- **Add a public method, declare it in `lib/pixelblaze.d.mts`**, and exercise
+  it in `test/types/consumer.ts`. Two guards cover this, and they cover
+  different things: `npm test` compares the declared member SET against the real
+  one, and `npm run typecheck` checks the SIGNATURES. Run both.
+- **`npm run typecheck` needs a compiler you supply yourself.** TypeScript is
+  deliberately not a devDependency, so `npm install` stays a no-op; the script
+  prints an install hint and exits 0 when it can't find one. Nothing in it is
+  needed to *use* pbz.
+- **`test/types/negative.ts` asserts things that must NOT compile**, via
+  `@ts-expect-error`. If you loosen a signature, the matching directive becomes
+  unused and typecheck fails with "Unused '@ts-expect-error' directive". That is
+  the guard working, not a spurious error: decide whether the looser signature
+  is intended, then update the assertion.
+- Declare only what the device was actually observed to send. The read methods
+  use optional fields plus an index signature for the rest, deliberately: a
+  declaration that invents fields is worse than none.
+- Doc comments on public members are `/** */` so editors surface them on hover;
+  `//` is for internals. Types live in the `.d.mts`, not in JSDoc tags, so
+  there is exactly one place to update a signature.
 - Read methods that map 1:1 to a wire response return it parsed and unrenamed.
   Composites build on those accessors and only add fields that bake in a decode.
   Cosmetic labeling is the CLI's job.
