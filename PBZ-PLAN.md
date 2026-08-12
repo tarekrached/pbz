@@ -37,7 +37,7 @@ protects — done); all are buildable before the sensor board lands (~week of 20
 - [x] **13 — read-method layering retrofit** (S — `getStatus()` + `getInfo` rebuild; do before 8)
 - [x] **14 — backup / restore (.pbb)** (M)
 - [x] **15 — color-picker controls in `set`** (S)
-- [ ] **16 — sequencer transport: pause / next / interval** (S — implemented, acceptance incomplete)
+- [x] **16 — sequencer transport: pause / next / interval** (S)
 - [ ] **17 — sensor board: live monitor** (M — SB needed for acceptance only)
 - [ ] **18 — sensor record / replay probe** (S–M, builds on 17)
 - [ ] **19 — power sampling window + SB presence check** (S)
@@ -57,9 +57,8 @@ the 2026-07-20 incident — see its note before assuming otherwise).
 pre-publish gate is **15, 16, then 10** (both S and useful, so they land before the repo goes
 public). **17–19 ship as documented known gaps** until the sensor board lands (17 still jumps
 the queue the day it arrives). **14 landed 2026-07-20** — ahead of its original post-publish
-slot, no longer a documented gap. **15 landed 2026-07-20; 16 is written but its acceptance is
-incomplete** (`seq time` unverified after the device wedge), so the publish gate is **not** yet
-clear. 21 unchanged: contingent, trigger unmet. Home Assistant work
+slot, no longer a documented gap. **15 landed 2026-07-20; 16's acceptance completed 2026-08-11**
+against the replacement board, so **the publish gate is CLEAR** (15, 16, 10 all done). 21 unchanged: contingent, trigger unmet. Home Assistant work
 is out of scope for pbz entirely (the community `ha-pixelblaze` integration is the right
 place for it, not a fourth one).
 
@@ -545,6 +544,33 @@ so zero-deps holds with no archive code.
     library callers, and the first thing that made this chunk look broken when it wasn't. Left
     as-is rather than re-timing code that couldn't be re-verified live mid-incident: bump to
     ~300–400 ms and confirm once the device is back.
+- **ACCEPTANCE COMPLETE 2026-08-11**, against the *replacement* board (chipId redacted) on
+  **firmware v3.51** — note that is OLDER than the v3.67 this plan's Appendix was verified
+  against, so treat any disagreement here as version-specific until re-checked.
+  - **`seq time` verified, and the seconds-vs-ms question is now settled by the firmware
+    itself.** Writing `{sequenceTimer: 20}` over ws leaves **`20000` in `config2.json`**, and 25
+    leaves 25000. So the **ws API is SECONDS and the persisted file is MILLISECONDS**; the
+    firmware converts at the boundary. `maxBrightness` splits the same way: **`0.55` in the file,
+    `55` over ws.** Anything reading the device's files directly must not assume the wire units.
+  - **`pause` / `resume` / `next` all verified.** `next` needs a longer observation window than
+    it looks: a `getState()` 1.2 s later still showed the old pattern, while the device had in
+    fact advanced. Do not assert on `next` inside ~2 s.
+  - **`lastProgramPath` in `config2.json` is NOT the live active pattern.** It lagged by a full
+    pattern for at least 8 s after an `activate()`, while `getState()` reported correctly. It is
+    a boot pointer persisted on a cadence; use `getState()` for the live answer. This produced a
+    false "restore failed" alarm before it was understood.
+  - **The 150 ms readback race did not reproduce on v3.51.** Bumped to 350 ms anyway (see the
+    method's comment): with no ack there is nothing to synchronise on, and the failure mode is a
+    silently-wrong read rather than an error.
+  - **The ws server wedged during the first attempt, and it cost a diagnosis.** That run made
+    ~30 messages over ONE connection in ~15 s and closed cleanly; a fresh connect a minute later
+    timed out while HTTP stayed healthy. Its `getConfig()` reads had been returning consistently
+    stale values, which looked exactly like a message-queue bug in `waitText` — **it was not.**
+    On the rebooted device the same read agreed with HTTP immediately after a write. **The stale
+    reads were a symptom of a degrading ws server, not a library defect.** Recovery was
+    `POST /reboot` over the surviving HTTP, per the README playbook, and it worked first time.
+    Lesson for anyone testing device I/O: get an independent oracle (here `GET /config2.json`)
+    before concluding the client is wrong.
 
 ### Chunk 17 — sensor board: live monitor
 **The bring-up tool for the sensor board (arriving ~week of 2026-07-20) — build it first.
@@ -773,7 +799,7 @@ WebSocket at `ws://<host>:81`. `save:true` persists to flash; `save:false` is li
 | Sequencer mode | `{"sequencerMode": 0\|1\|2}` (0 Off, 1 ShuffleAll, 2 Playlist) |
 | Sequencer run/pause | `{"runSequencer": <bool>}` (the UI play/pause button) |
 | Sequencer next | `{"nextProgram": true}` |
-| Shuffle interval | `{"sequenceTimer": <n ≥ 1>}` — plain config key (UI refuses < 1; confirm units vs `getConfig` when implementing Chunk 16) |
+| Shuffle interval | `{"sequenceTimer": <n ≥ 1>}` — plain config key, **SECONDS** on the wire (UI refuses < 1). Verified live 2026-08-11: the persisted `config2.json` holds the same value in **milliseconds** (ws 20 → file 20000), and `maxBrightness` splits the same way (ws `55` → file `0.55`). Don't assume wire units when reading the device's own files. |
 | Picker controls | `setControls` values may be 3-arrays: `{"hsvPicker<Name>": [h,s,v]}` / `rgbPicker` `[r,g,b]`, components 0..1 |
 | Get playlist | `{"getPlaylist": "_defaultplaylist_"}` |
 | Set playlist | playlist object, `items:[{"id","ms"}]` |
