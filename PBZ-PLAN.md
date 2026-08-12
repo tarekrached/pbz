@@ -831,11 +831,18 @@ the fix surface before a first release:
 5. **`matchBraces` doesn't understand regex literals** (`compiler.mjs`). Latent: verified not
    biting on any current fixture, but a web UI containing `/}/ ` in a regex would break
    extraction.
-6. **The power ESTIMATOR path is unvalidated**, unlike the cap path which now is. Do this one
-   first: deleting `measured.channel_bench_w_per_100px` crashes with "Cannot read properties of
-   undefined (reading 'r')", and `power.example.json` **explicitly tells RGB-strip owners to
-   delete that block**. A documented user action that crashes the tool. Missing `idle_amps` or
-   `supply_voltage_v`, or a `pixel_count` of 0, each print NaN.
+6. ~~**The power ESTIMATOR path is unvalidated**~~ — **DONE 2026-08-12**, first thing after
+   publication, because it was a documented instruction in a public repo that crashed the tool.
+   `power.example.json` told RGB-strip owners to delete `measured.channel_bench_w_per_100px`,
+   which crashed with "Cannot read properties of undefined (reading 'r')".
+   The fix went further than not-crashing, because the obvious repair was worse than the bug:
+   keeping the W-extraction model with a zero-amp white channel would route `min(r,g,b)` into
+   nothing and estimate a white frame at roughly idle — a **3x underestimate**, in the one
+   direction that matters when someone is sizing a supply. **RGB is now a real mode:** omit `w`
+   and the estimator skips extraction entirely and counts all three channels, which is what an
+   RGB strip actually draws. Deleting the whole block throws with a message naming the fix.
+   `supply_voltage_v`, `pixel_count` and the r/g/b coefficients are validated. Six tests,
+   including one asserting an RGB white frame costs far more than an RGBW one.
 7. **`getState()` still tolerates null on both of its reads** and returns
    `{vars:{}, name:undefined, …}`, so `pbz get` prints "active: undefined (undefined)" against a
    silent device. The one silent-null path Chunk 24 left uncovered.

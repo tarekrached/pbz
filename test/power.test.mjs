@@ -140,3 +140,54 @@ test('a negative margin throws', () => {
 test('estimateDraw on zero sampled frames throws instead of reporting -Infinity', () => {
   assert.throws(() => estimateDraw([], power), /no preview frames were sampled/);
 });
+
+// --- plain RGB strips (post-publish item 6) ---
+// power.example.json used to say "drop this block on a plain RGB strip", and
+// doing so crashed with "Cannot read properties of undefined (reading 'r')".
+// The documented action now works, and works CORRECTLY: an RGB strip has no
+// white element, so the W-extraction model must not apply to it.
+
+const rgbPower = (() => {
+  const p = structuredClone(power);
+  delete p.measured.channel_bench_w_per_100px.w; // what an RGB owner is told to do
+  return p;
+})();
+
+test('omitting w yields a zero W coefficient (the RGB signal)', () => {
+  assert.equal(channelFullAmps(rgbPower).w, 0);
+  assert.ok(channelFullAmps(rgbPower).r > 0);
+});
+
+test('on RGB, a white frame costs ALL THREE channels, not a near-zero W channel', () => {
+  const amps = estimateFrameAmps(solid(255, 255, 255), rgbPower);
+  const { r, g, b } = channelFullAmps(rgbPower);
+  const expected = rgbPower.measured.idle_amps + r + g + b;
+  assert.ok(Math.abs(amps - expected) < 1e-9, `got ${amps}, expected ~${expected}`);
+  // The failure this guards: applying W-extraction with a 0 A white channel
+  // would route min(r,g,b) into nothing and estimate white at ~idle, i.e. a
+  // 3x UNDERestimate, in the one direction that matters when sizing a supply.
+  assert.ok(amps > rgbPower.measured.idle_amps * 10, 'white must not estimate as near-idle');
+});
+
+test('on RGB, a single-channel frame is unchanged (extraction never applied anyway)', () => {
+  const amps = estimateFrameAmps(solid(255, 0, 0), rgbPower);
+  assert.ok(Math.abs(amps - (rgbPower.measured.idle_amps + channelFullAmps(rgbPower).r)) < 1e-9);
+});
+
+test('RGBW still extracts: the same white frame costs far less than on RGB', () => {
+  const rgbw = estimateFrameAmps(solid(255, 255, 255), power);
+  const rgb = estimateFrameAmps(solid(255, 255, 255), rgbPower);
+  assert.ok(rgbw < rgb / 2, 'RGBW white should route through the single W element');
+});
+
+test('deleting the whole bench block throws with an actionable message, not a TypeError', () => {
+  const p = structuredClone(power);
+  delete p.measured.channel_bench_w_per_100px;
+  assert.throws(() => channelFullAmps(p), /channel_bench_w_per_100px is required/);
+  assert.throws(() => channelFullAmps(p), /omit w/); // tells an RGB owner what to do instead
+});
+
+test('a missing supply_voltage_v or pixel_count throws instead of printing NaN', () => {
+  assert.throws(() => channelFullAmps({ ...power, supply_voltage_v: undefined }), /supply_voltage_v/);
+  assert.throws(() => channelFullAmps({ ...power, pixel_count: 0 }), /pixel_count/);
+});

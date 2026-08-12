@@ -28,7 +28,7 @@
     "idle_amps": 0.17,
 
     "channel_bench_w_per_100px": { "r": 37.6, "g": 41.9, "b": 40.7, "w": 40.7 },
-    "_channel_bench_note": "Each channel alone at full, 100 pixels, both ends fed. Only needed by `pbz power` (the live per-pattern estimate), which uses it to model an RGBW strip's W-extraction — min(r,g,b) is routed to the dedicated white element, so a white pixel must not be counted as r+g+b. Drop this block on a plain RGB strip."
+    "_channel_bench_note": "Each channel alone at full, 100 pixels, both ends fed. Needed by `pbz power` (the live per-pattern estimate). On an RGBW strip it models W-extraction: min(r,g,b) is routed to the dedicated white element, so a white pixel must not be counted as r+g+b. ON A PLAIN RGB STRIP, keep r/g/b and OMIT w — pbz then skips the extraction model entirely and counts all three channels, which is what an RGB strip actually draws. Do not delete the whole block; `pbz power` cannot estimate without it."
   },
 
   "pixel_count": 170,
