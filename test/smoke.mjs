@@ -12,56 +12,60 @@ if (!host) {
   process.exit(1);
 }
 
-// A sweep against an unreachable device is an ordinary outcome (no Pixelblaze
-// on the LAN, wrong address, device asleep). Report it as one line rather than
-// an unhandled rejection: the stack trace tells a newcomer nothing and reads
-// like pbz is broken.
-process.on('unhandledRejection', (err) => {
-  console.error(`\nsmoke: FAILED against ${host} — ${err?.message ?? err}`);
-  process.exit(1);
-});
 const pb = new Pixelblaze(host);
 
-process.stdout.write(`smoke: list … `);
-const rows = await pb.list();
-console.log(`ok (${rows.length} patterns)`);
+// An unreachable device is an ordinary outcome here (no Pixelblaze on the LAN,
+// wrong address, device asleep), so it gets one line instead of a stack trace —
+// which tells a newcomer nothing and reads like pbz itself is broken. Note this
+// has to be a real try/catch: these are top-level awaits, and Node surfaces a
+// rejected one as a module-evaluation error, so an 'unhandledRejection' handler
+// never fires.
+try {
+  process.stdout.write(`smoke: list … `);
+  const rows = await pb.list();
+  console.log(`ok (${rows.length} patterns)`);
 
-process.stdout.write(`smoke: get … `);
-const st = await pb.getState();
-console.log(`ok (active: ${st.name})`);
+  process.stdout.write(`smoke: get … `);
+  const st = await pb.getState();
+  console.log(`ok (active: ${st.name})`);
 
-process.stdout.write(`smoke: getVars … `);
-const vars = await pb.getVars();
-console.log(`ok (${Object.keys(vars).length} vars)`);
+  process.stdout.write(`smoke: getVars … `);
+  const vars = await pb.getVars();
+  console.log(`ok (${Object.keys(vars).length} vars)`);
 
-process.stdout.write(`smoke: config … `);
-const cfg = await pb.getConfig();
-console.log(`ok (colorOrder ${cfg.colorOrder}, pixelCount ${cfg.pixelCount})`);
+  process.stdout.write(`smoke: config … `);
+  const cfg = await pb.getConfig();
+  console.log(`ok (colorOrder ${cfg.colorOrder}, pixelCount ${cfg.pixelCount})`);
 
-process.stdout.write(`smoke: status … `);
-const status = await pb.getStatus();
-console.log(`ok (fps ${status.fps?.toFixed(1)}, mem ${status.mem})`);
+  process.stdout.write(`smoke: status … `);
+  const status = await pb.getStatus();
+  console.log(`ok (fps ${status.fps?.toFixed(1)}, mem ${status.mem})`);
 
-process.stdout.write(`smoke: peers … `);
-const peers = await pb.getPeers();
-console.log(`ok (${peers.length} peers)`);
+  process.stdout.write(`smoke: peers … `);
+  const peers = await pb.getPeers();
+  console.log(`ok (${peers.length} peers)`);
 
-process.stdout.write(`smoke: info … `);
-const info = await pb.getInfo();
-console.log(`ok (v${info.ver}, fps ${info.fps?.toFixed(1)}, group ${info.groupRole})`);
+  process.stdout.write(`smoke: info … `);
+  const info = await pb.getInfo();
+  console.log(`ok (v${info.ver}, fps ${info.fps?.toFixed(1)}, group ${info.groupRole})`);
 
-process.stdout.write(`smoke: playlist … `);
-const pl = await pb.getPlaylist();
-console.log(`ok (${pl.items.length} items, position ${pl.position})`);
+  process.stdout.write(`smoke: playlist … `);
+  const pl = await pb.getPlaylist();
+  console.log(`ok (${pl.items.length} items, position ${pl.position})`);
 
-process.stdout.write(`smoke: map get … `);
-const mapSource = await pb.getMap();
-const coords = await pb.getMap({ coords: true });
-console.log(`ok (${mapSource.length} chars source, ${coords.length} coords)`);
+  process.stdout.write(`smoke: map get … `);
+  const mapSource = await pb.getMap();
+  const coords = await pb.getMap({ coords: true });
+  console.log(`ok (${mapSource.length} chars source, ${coords.length} coords)`);
 
-process.stdout.write(`smoke: ping … `);
-const ms = await pb.ping();
-console.log(`ok (${ms} ms)`);
+  process.stdout.write(`smoke: ping … `);
+  const ms = await pb.ping();
+  console.log(`ok (${ms} ms)`);
 
-console.log(`smoke sweep passed against ${host}`);
-pb.close();
+  console.log(`smoke sweep passed against ${host}`);
+} catch (err) {
+  console.error(`\nsmoke: FAILED against ${host} — ${err?.message ?? err}`);
+  process.exitCode = 1;
+} finally {
+  pb.close();
+}

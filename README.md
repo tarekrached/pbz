@@ -171,6 +171,22 @@ agent-driven bursts are exactly the risky shape:
   unresponsive, suspect the device first, and cut its power so the blocked
   connects fail fast.
 
+## What pbz trusts
+
+Worth being explicit, because the central trick is unusual: **pbz fetches HTML
+from your device over plain HTTP and executes code extracted from it in
+`node:vm`.**
+
+`node:vm` is not a security sandbox. It isolates globals, not capability. Code
+running in it should be assumed able to affect the process. That is an accepted
+trade here, because the alternative is reimplementing a compiler and getting it
+subtly wrong, but it means pbz **trusts the device it talks to** and the network
+path to it. There is no TLS, no signature check, and no pinning: anything that
+can answer on that address, or sit between you and it, can hand pbz code to run.
+
+On a home LAN with your own Pixelblaze this is fine. Don't point pbz at a device
+you don't control, or reach one across an untrusted network.
+
 ## Power
 
 `limit` sets the firmware's hardware brightness ceiling (`maxBrightness`), which
