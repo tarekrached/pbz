@@ -17,11 +17,18 @@ const dir = path.join(import.meta.dirname, 'fixtures');
 // producing a false failure.
 export const PINNED_FIRMWARE = 'v3.67';
 
+// The device reports `ver` WITHOUT a leading v ("3.67"), so a captured file is
+// named ui-3.67.html.gz while the original hand-vendored one was ui-v3.67.html.gz.
+// Compare on the normalized form or a capture from the correct firmware would
+// still be treated as a mismatch and skip — which is exactly what happened.
+export const normalizeVersion = (v) => String(v).replace(/^v/, '');
+
 // Newest captured ui-<ver>.html.gz, or null if none has been captured yet.
 export function loadWebUI() {
   let names;
   try { names = readdirSync(dir); } catch { return null; }
-  const hits = names.filter(n => /^ui-.+\.html\.gz$/.test(n)).sort();
+  const hits = names.filter(n => /^ui-.+\.html\.gz$/.test(n))
+    .sort((a, b) => normalizeVersion(a).localeCompare(normalizeVersion(b), undefined, { numeric: true }));
   if (!hits.length) return null;
   const file = hits[hits.length - 1];
   const html = zlib.gunzipSync(readFileSync(path.join(dir, file))).toString('utf8').replace(/^﻿/, '');

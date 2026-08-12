@@ -13,13 +13,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { makeCompiler, makeLZ } from '../lib/compiler.mjs';
 import { buildBytecode, buildPBP, stableId, prettyName } from '../lib/pbp.mjs';
-import { loadWebUI, readFixture, PINNED_FIRMWARE, CAPTURE_HINT } from './fixtures.mjs';
+import { loadWebUI, readFixture, PINNED_FIRMWARE, CAPTURE_HINT, normalizeVersion } from './fixtures.mjs';
 
 const golden = JSON.parse(readFixture('golden.json'));
 const source = readFixture('_fixture.js');
 const ui = loadWebUI();
 const skip = !ui ? CAPTURE_HINT
-  : ui.version !== PINNED_FIRMWARE
+  : normalizeVersion(ui.version) !== normalizeVersion(PINNED_FIRMWARE)
     ? `golden bytes are pinned to firmware ${PINNED_FIRMWARE}; captured fixture is ${ui.version}`
     : false;
 const html = ui?.html;
