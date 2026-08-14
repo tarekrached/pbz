@@ -49,7 +49,7 @@ protects — done); all are buildable before the sensor board lands (~week of 20
 - [x] **25 — storage-pressure surfacing** (S — added 2026-08-14, from the SPIFFS death-spiral post-mortem)
 - [x] **26 — write-latency watchdog** (S–M — same origin; the signal that would have caught it weeks early)
 - [x] **27 — backup-freshness nudge** (S — the `.pbb` is what made the incident survivable)
-- [ ] **28 — `defrag`: OTA deep clean** (M — do after 25+26; they are its go/no-go gate)
+- [x] **28 — `defrag`: OTA deep clean** (M — do after 25+26; they are its go/no-go gate)
 
 Suggested order by value: **0, 1, 2, 11, 4, 3, 7, 5, 6, 12, 13, 8, 9, 10.**
 Remaining, by value: **20, 14, 15 done**; **16 implemented but unverified** (`seq time` still
@@ -1130,6 +1130,105 @@ the serial-erase recovery, minus the web-app region, minus the bench.
   the safety property); live run on the S-variant spare (the board that exists to absorb this
   kind of test), showing inventory identical and storage-used unchanged or lower.
 - **Size:** M.
+
+- **Landed 2026-08-14 (hermetic half only — see below).** `classifyForDefrag`
+  (`lib/backup.mjs`) is default-deny by construction (`/p/*` or `/l/*`, minus a
+  case-insensitive `.gz` exclusion), never an enumerated blocklist — covered by
+  23 tests in `test/backup.test.mjs`, including a golden test partitioning the
+  Appendix's exact 2026-07-19 device inventory (24 patterns + playlist deletable,
+  7 protected files kept). `defragHealthGate` (`lib/latency.mjs`) is a **deliberate
+  divergence from `recordSample`**: a one-shot go/no-go gate can't inherit
+  `recordSample`'s cold-start-never-warns rule, because there's no "next sample"
+  for a fresh host to fall back on — the 2s floor governs cold and warm hosts
+  alike here, proven by an explicit test that shows the same inputs disagree
+  between the two functions. `Pixelblaze#defrag` composes `saveBackup` →
+  decode-verify → `getStatus`/`list` (before-figures) → warmed `getConfig` +
+  timed `setConfig` health gate → a `GET /delete` loop over the backup's own
+  key set (never a fresh `/list` — nothing is deleted unless already
+  decode-verified in the backup) → `restoreBackup` (no `--prune`, moot: the
+  delete loop already removed exactly what a prune pass would look for) → a
+  new private `_waitForReboot` (polls `ping()` after `close()`, since
+  `restoreBackup()`'s own `/reboot` POST doesn't wait for the device to come
+  back) → a two-way pattern-id-set verify → after-figures. Every failure mode
+  names how far it got and the verified backup to recover from, per the spec.
+  `pbz defrag --yes` checks `--yes` before any I/O (stricter than `restore`,
+  which resolves the host first) and wires the health gate from
+  `readLatencyState` + `defragHealthGate`. **Live acceptance COMPLETE 2026-08-14**
+  on the S-variant spare (192.168.1.187, v3.67): full run clean end-to-end —
+  36-file backup decode-verified, health gate passed against the real ~137ms
+  baseline, 31 `/p/*`+`/l/*` files deleted, 5 non-pattern files kept, 36
+  restored, reboot survived, two-way inventory verify passed (27 patterns),
+  storage before/after identical at 551196/1378241 (39%) — "unchanged or
+  lower" holds; a healthy FS has nothing to reclaim, the run proves the
+  composition safe. `_waitForReboot`'s `45000`/`1000` defaults worked
+  first try (the spare answers pings again well inside the window); no
+  tuning needed. One non-pbz observation from the run: the round-tripped
+  `config.json` surfaced that the spare's `discoveryEnable` had drifted to
+  `true` at some earlier point (pre-defrag backup proves defrag innocent);
+  reset to `false` per the installation's documented spare config.
+
+- **Reviewed and amended same day — one blocker, four should-fixes.** A
+  hermetic-only review (no device contact, same constraint as the session
+  above) found:
+  1. **BLOCKER — the CLI's health gate read its own baseline AFTER the
+     gate's own write had already updated it.** `setConfig`'s ping-chased
+     ack fires `_reportWriteLatency` -> `onWriteLatency` -> `makeWatchdog` ->
+     `writeState` SYNCHRONOUSLY, before `setConfig()`'s promise resolves back
+     to `defrag()` — so a gate closure that read state lazily was always
+     grading a sample against the baseline that sample itself had just
+     produced. Measured effect: a cold host could never refuse (a cold
+     sample seeds the baseline at itself, so `threshold >= sample` always);
+     a warm host's effective multiplier silently loosened toward the EMA of
+     the very sample under test. Fix: `buildDefragHealthGate` moved into
+     `lib/latency.mjs` and takes its baseline snapshot SYNCHRONOUSLY at
+     build time (`readState` injected), not lazily inside the closure it
+     returns — and building the closure is itself part of `pb.defrag(...)`'s
+     own argument list, so the snapshot is guaranteed to land before
+     `defrag()`'s first write. New composed regression tests in
+     `test/latency.test.mjs` wire `makeWatchdog` + `buildDefragHealthGate`
+     together against a shared in-memory store and pin the exact two cases
+     that escaped isolated unit testing: cold host + 6000ms sample ->
+     refused; warm 1000ms baseline + 5000ms sample -> refused.
+  2. `classifyForDefrag` hardened against traversal- and whitespace-shaped
+     input ahead of the prefix check: any path with leading/trailing
+     whitespace, a doubled `//`, or a literal `.`/`..` path segment is now
+     always `kept`. SPIFFS is flat, so these almost certainly never occur as
+     real `/list` keys — this is belt-and-braces on the "default-deny by
+     construction" claim for arbitrary input, not a response to an observed
+     device behavior. 6 new tests.
+  3. `_waitForReboot` could vacuously succeed against the NOT-YET-rebooted
+     device: `reboot()`'s `POST /reboot` returns as soon as the ESP32 ACKs
+     the HTTP request, well before it actually restarts, so an immediate
+     ping could land in that window and falsely confirm — making the verify
+     step read pre-reboot state as post-restore. Fixed: sleeps `pollMs`
+     before the FIRST attempt too (not just between retries), and now
+     requires TWO CONSECUTIVE successful pings before returning (any
+     failure in between resets the count). Real cadence, now documented in
+     the method's own comment: a failed ping costs up to protocol.mjs's
+     ~5s open timeout plus ping()'s own ~3s ack wait (~8s worst case), so
+     `pollMs` governs only the gaps between successes, not the failure
+     retry interval — at the defaults that's roughly 5-6 real attempts in
+     45s, with possible overshoot to ~53s, not a precise 45s cutoff.
+  4. Steps (2)-(3) (`getStatus`, `list`, `getConfig`, the gate's own timed
+     `setConfig`) now wrap their errors the same way step (1) does — naming
+     what was attempted and that a fresh, decode-verified backup already
+     exists with nothing deleted. The likeliest single failure of the group
+     is the gate's own `setConfig` hitting its Chunk-26 8s ack timeout on a
+     board that's already struggling, which is exactly the disease the gate
+     exists to catch before anything is deleted.
+  5. The gate-refusal message now guards `gate.message` being omitted (legal
+     per the d.mts — `test/types/consumer.ts` now models a gate that returns
+     `{ok:false}` with no message) instead of interpolating `undefined`, and
+     no longer claims "nothing else was touched" — the gate's own
+     `setConfig({name})` is itself a flash write that already happened by
+     the time the refusal is thrown; reworded to name that write explicitly
+     as the one thing that was sent.
+  Nits also applied: the classification-test count above is now the real,
+  recounted 23 (was miscounted as 16, then 17); the decode-failure message
+  reads "aborting before mutating the device" (saveBackup already reads
+  everything, so "touching" overclaimed); the CLI's kept-count line reads
+  "kept N non-pattern file(s)" (the prior wording undersold what's
+  protected — the `.gz` web-app blobs aren't even in the backup to count).
 
 ---
 

@@ -52,6 +52,7 @@
     pbz backup [file.pbb]                    snapshot every device file (patterns, config, playlist, map) to one JSON .pbb; prints the storage line after
     pbz backup --fs-image [file.bin]         device-side full-flash image (POST /backupFsImage); restore by holding the button at power-up
     pbz restore <file.pbb> [--prune] --yes   destructive: POST each file back + reboot; --prune also deletes device files absent from the backup
+    pbz defrag --yes                         destructive: fresh backup, health-check, delete every pattern + the playlist, restore, reboot, verify — an OTA deep clean for SPIFFS fragmentation
   Notes:
     - `run` replaces the running program in place — great for fast iteration. It
       vanishes when you navigate the web UI or reboot; use `save` to persist.
@@ -105,6 +106,17 @@
       regression; `run`/`save`'s own internal acks keep the 3s default. Warnings name
       the underlying library operation, not the CLI verb: `set` -> setControls,
       `set-config`/`seq time` -> setConfig.
+    - `defrag` is the remedy for SPIFFS fragmentation itself, not just its symptoms:
+      the firmware has no GC/format endpoint, but GC runs as a side effect of writes
+      and deletes give it something reclaimable, so backup -> delete -> restore gives
+      GC a clean reclaim window on a still-healthy board. It NEVER touches `.gz` web-app
+      files, `config*.json`, `pixelmap.*`, or `obconf.dat` — only `/p/*` (patterns) and
+      `/l/*` (the playlist), and only paths already present in the fresh backup it just
+      took and decode-verified. It refuses (without deleting anything) if a one-shot
+      health-check write is already slow — a board that grinding may not survive the
+      delete phase, and that's triage, not defrag. Side effect: it leaves the freshest
+      possible `.pbb` on disk, which silences `restore --prune`'s freshness nudge for
+      the next 7 days.
 */
 
 import { readFile, readdir, stat } from 'node:fs/promises';
@@ -117,7 +129,7 @@ import { budgetChain, solveCapPercent, estimateDraw } from './lib/power.mjs';
 import { readConfig, resolveHost as hostFromConfig, checkExpectations, validateMaxStoragePct, findConfig } from './lib/config.mjs';
 import { storagePct, storageLevel } from './lib/storage.mjs';
 import { scanBackupFreshness } from './lib/backup.mjs';
-import { parseLatencyState, makeWatchdog } from './lib/latency.mjs';
+import { parseLatencyState, makeWatchdog, buildDefragHealthGate } from './lib/latency.mjs';
 
 // ---------- args & host resolution ----------
 const argv = process.argv.slice(2);
@@ -554,6 +566,28 @@ try {
     if (!flags.yes) die('restore is destructive (overwrites device files + reboots) — pass --yes to confirm. WiFi config is never included in a backup.');
     const res = await pb.restoreBackup(file, { prune: !!flags.prune });
     console.log(`restored ${res.restored} files${res.pruned.length ? `, pruned ${res.pruned.length}` : ''} — rebooting`);
+  } else if (cmd === 'defrag') {
+    // Checked before ANY I/O — not even host resolution (which can read
+    // pb.config.json) — mirroring restore's --yes gate but earlier, since
+    // this command's very first step is destructive-adjacent enough
+    // (deleting every pattern) that it shouldn't get to prove a host even
+    // resolves before confirming intent.
+    if (!flags.yes) {
+      die('defrag is destructive (deletes every pattern + the playlist, then restores from a fresh backup, then reboots) — pass --yes to confirm. A fresh, decode-verified .pbb is taken as the very first step regardless.');
+    }
+    const host = resolveHost();
+    const pb = mkPixelblaze(host);
+    console.log(`defrag: taking a fresh backup of ${host}, health-checking, then deep-cleaning …`);
+    // buildDefragHealthGate(host, …) runs HERE, as part of building this
+    // argument list — synchronously, before pb.defrag()'s own body (and its
+    // health-check write, which updates this same host's stored baseline)
+    // ever runs. That ordering is load-bearing: see the function's own
+    // comment in lib/latency.mjs for the bug this fixes.
+    const res = await pb.defrag(undefined, { healthGate: buildDefragHealthGate(host, { readState: readLatencyState }) });
+    console.log(`backup verified: ${res.file} (${res.count} files)`);
+    printStorageLine(res.before.storageUsed, res.before.storageSize);
+    console.log(`deleted ${res.deleted} pattern/playlist file(s), kept ${res.kept} non-pattern file(s), restored ${res.restored} file(s) — inventory verified (${res.patterns.length} patterns)`);
+    printStorageLine(res.after.storageUsed, res.after.storageSize);
   } else if (cmd === 'delete') {
     const host = resolveHost();
     const target = pos[1]; if (!target) die('usage: delete <Name or id>');
@@ -595,7 +629,7 @@ try {
       }
     }
   } else {
-    console.log('commands: run | save | compile | set | setvars | seq | playlist | list | activate | brightness | limit | power | config | set-config | delete | export | import | info | map | reboot | ping | discover | backup | restore  (see header of this file)');
+    console.log('commands: run | save | compile | set | setvars | seq | playlist | list | activate | brightness | limit | power | config | set-config | delete | export | import | info | map | reboot | ping | discover | backup | restore | defrag  (see header of this file)');
     process.exit(cmd ? 1 : 0);
   }
   // Each command's Pixelblaze instance(s) now share one reused connection

@@ -6,7 +6,7 @@
 // check that a signature is right, which is what this file is for. Run both
 // with `npm run typecheck`.
 import { Pixelblaze } from '../../lib/pixelblaze.mjs';
-import type { DeviceInfo, PlaylistItem, DiscoveredDevice, ControlValue, PixelblazeOptions } from '../../lib/pixelblaze.mjs';
+import type { DeviceInfo, PlaylistItem, DiscoveredDevice, ControlValue, PixelblazeOptions, DefragResult } from '../../lib/pixelblaze.mjs';
 
 export async function exerciseEveryMethod() {
   const pb = new Pixelblaze('192.168.1.50');
@@ -87,6 +87,24 @@ export async function exerciseEveryMethod() {
   const pruned: string[] = restored.pruned;
   await pb.backupFsImage('img.bin');
 
+  const defragResult: DefragResult = await pb.defrag('f.pbb', {
+    // message is optional on the {ok:false} shape — the omitted-message
+    // branch below is what defrag()'s own `gate.message ?? …` guard exists
+    // to handle; a gate that always supplies one would never exercise it.
+    healthGate: (sampleMs: number) => {
+      if (sampleMs < 2000) return { ok: true };
+      if (sampleMs > 10000) return { ok: false };
+      return { ok: false, message: 'too slow' };
+    },
+    rebootTimeoutMs: 45000,
+    rebootPollMs: 1000,
+  });
+  const defragNoArgs: DefragResult = await pb.defrag();
+  const defragDeleted: number = defragResult.deleted;
+  const defragKept: number = defragResult.kept;
+  const defragPatterns = defragResult.patterns;
+  const defragPatternName: string = defragPatterns[0].name;
+
   await pb.reboot();
   const latency: number = await pb.ping();
 
@@ -106,5 +124,6 @@ export async function exerciseEveryMethod() {
     running, items, fps, peers, sensorBoard, role, infoFps, infoName, mapSource,
     mapSourceEmptyOpts, firstX, backupCount, pruned, latency, address, frames,
     compiledOps, state, cfg, status, playlist, info, saved, exported, sources,
+    defragResult, defragNoArgs, defragDeleted, defragKept, defragPatterns, defragPatternName,
   };
 }

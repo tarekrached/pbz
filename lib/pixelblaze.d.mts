@@ -180,6 +180,42 @@ export interface SaveResult {
 }
 
 /**
+ * `defrag()`'s go/no-go health check, injected by the caller. The CLI builds
+ * this from `lib/latency.mjs`'s `defragHealthGate` plus the stored per-host
+ * baseline (PBZ-PLAN.md Chunk 26); a library caller may supply its own.
+ * `sampleMs` is the health-check write's own timed round trip.
+ */
+export type DefragHealthGate = (sampleMs: number) => { ok: boolean; message?: string };
+
+/** Options for `defrag()`. All optional. */
+export interface DefragOptions {
+  /** Omit to skip the gate entirely (not recommended). */
+  healthGate?: DefragHealthGate;
+  /** How long to wait for the device to answer a ping after the restore-triggered reboot. Default 45000. */
+  rebootTimeoutMs?: number;
+  /** Poll interval while waiting for the reboot. Default 1000. */
+  rebootPollMs?: number;
+}
+
+/** `defrag()`'s result: before/after storage figures and the verified pattern inventory. */
+export interface DefragResult {
+  /** The fresh `.pbb` taken as step one, and restored from at the end. */
+  file: string;
+  /** Total files in that backup. */
+  count: number;
+  /** How many were deleted (the `/p/*` and `/l/*` files). */
+  deleted: number;
+  /** How many were structurally protected and never touched. */
+  kept: number;
+  /** How many files the restore step POSTed back (from `restoreBackup()`). */
+  restored: number;
+  before: { storageUsed?: number; storageSize?: number };
+  after: { storageUsed?: number; storageSize?: number };
+  /** Post-restore pattern inventory, verified to match the pre-delete one. */
+  patterns: PatternRow[];
+}
+
+/**
  * Constructor options for `Pixelblaze`. All optional — the class works with
  * none of these set.
  */
@@ -397,6 +433,17 @@ export declare class Pixelblaze {
    * on-device files the backup doesn't contain.
    */
   restoreBackup(file: string, opts?: { prune?: boolean }): Promise<{ restored: number; pruned: string[] }>;
+
+  /**
+   * OTA deep clean: fresh backup, decode-verify, health-gate, delete every
+   * pattern + the playlist, restore from that same backup, wait for the
+   * reboot, verify the inventory matches. `file` is optional — the CLI
+   * never passes one (`saveBackup()`'s own default naming is used); a
+   * library caller may pin a location. Fails loud mid-sequence: every
+   * thrown message says how far it got and names the verified backup to
+   * recover from.
+   */
+  defrag(file?: string, opts?: DefragOptions): Promise<DefragResult>;
 
   /**
    * The separate, heavier device-side full-flash image. LEDs go dark while it

@@ -3,7 +3,7 @@
 // and map.test.mjs's "no LAN, fast, repeatable" approach for the fiddly bits.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseFileList, parseBackup, buildBackup, scanBackupFreshness, BACKUP_FRESHNESS_MS, defaultBackupName } from '../lib/backup.mjs';
+import { parseFileList, parseBackup, buildBackup, scanBackupFreshness, BACKUP_FRESHNESS_MS, defaultBackupName, classifyForDefrag } from '../lib/backup.mjs';
 
 test('buildBackup -> parseBackup round-trips every file byte-for-byte', () => {
   const files = {
@@ -140,4 +140,129 @@ test('defaultBackupName output feeds straight into scanBackupFreshness as a fres
 test('defaultBackupName falls back to "unknown" when chipId is nullish', () => {
   assert.equal(defaultBackupName('wall', null, NOW), 'wall-unknown-2026-08-14-000000Z.pbb');
   assert.equal(defaultBackupName('wall', undefined, NOW), 'wall-unknown-2026-08-14-000000Z.pbb');
+});
+
+// PBZ-PLAN.md Chunk 28 (`defrag`) — classifyForDefrag is the safety property:
+// default-deny by construction (only /p/* and /l/*, minus .gz), never an
+// enumerated blocklist. Every case below is a plain {input -> deletable|kept}
+// assertion.
+
+test('classifyForDefrag: /p/<id> pattern is deletable', () => {
+  assert.deepEqual(classifyForDefrag(['/p/abc123']), { deletable: ['/p/abc123'], kept: [] });
+});
+
+test('classifyForDefrag: /l/_defaultplaylist_ playlist is deletable', () => {
+  assert.deepEqual(classifyForDefrag(['/l/_defaultplaylist_']), { deletable: ['/l/_defaultplaylist_'], kept: [] });
+});
+
+test('classifyForDefrag: /p/<id>.c control-state file is deletable (same /p/ prefix)', () => {
+  assert.deepEqual(classifyForDefrag(['/p/abc123.c']), { deletable: ['/p/abc123.c'], kept: [] });
+});
+
+test('classifyForDefrag: bare "p/<id>" (no leading slash) normalizes to /p/<id> and is deletable', () => {
+  assert.deepEqual(classifyForDefrag(['p/abc123']), { deletable: ['/p/abc123'], kept: [] });
+});
+
+test('classifyForDefrag: bare "l/<id>" (no leading slash) normalizes to /l/<id> and is deletable', () => {
+  assert.deepEqual(classifyForDefrag(['l/_defaultplaylist_']), { deletable: ['/l/_defaultplaylist_'], kept: [] });
+});
+
+test('classifyForDefrag: config.json is protected (default-deny, not an exclusion match)', () => {
+  assert.deepEqual(classifyForDefrag(['config.json']), { deletable: [], kept: ['/config.json'] });
+});
+
+test('classifyForDefrag: config2.json is protected', () => {
+  assert.deepEqual(classifyForDefrag(['config2.json']), { deletable: [], kept: ['/config2.json'] });
+});
+
+test('classifyForDefrag: pixelmap.txt is protected', () => {
+  assert.deepEqual(classifyForDefrag(['pixelmap.txt']), { deletable: [], kept: ['/pixelmap.txt'] });
+});
+
+test('classifyForDefrag: pixelmap.dat (the computed binary map) is protected', () => {
+  assert.deepEqual(classifyForDefrag(['pixelmap.dat']), { deletable: [], kept: ['/pixelmap.dat'] });
+});
+
+test('classifyForDefrag: obconf.dat is protected', () => {
+  assert.deepEqual(classifyForDefrag(['obconf.dat']), { deletable: [], kept: ['/obconf.dat'] });
+});
+
+test('classifyForDefrag: root .gz web-app files (index.html.gz, recovery.html.gz) are protected', () => {
+  assert.deepEqual(classifyForDefrag(['index.html.gz', 'recovery.html.gz']),
+    { deletable: [], kept: ['/index.html.gz', '/recovery.html.gz'] });
+});
+
+test('classifyForDefrag: a hypothetical /p/thumb.gz is protected — .gz exclusion wins even under an eligible prefix', () => {
+  assert.deepEqual(classifyForDefrag(['/p/thumb.gz']), { deletable: [], kept: ['/p/thumb.gz'] });
+});
+
+test('classifyForDefrag: .gz check is case-insensitive (/p/thumb.GZ is still protected)', () => {
+  assert.deepEqual(classifyForDefrag(['/p/thumb.GZ']), { deletable: [], kept: ['/p/thumb.GZ'] });
+});
+
+test('classifyForDefrag: uppercase prefix (/P/foo) does not match — prefix matching is case-sensitive, so it is kept', () => {
+  assert.deepEqual(classifyForDefrag(['/P/foo']), { deletable: [], kept: ['/P/foo'] });
+});
+
+test('classifyForDefrag: /pfoo (no slash after "p") is a collision, not a prefix match — kept', () => {
+  assert.deepEqual(classifyForDefrag(['/pfoo']), { deletable: [], kept: ['/pfoo'] });
+});
+
+test('classifyForDefrag: empty input -> empty everything', () => {
+  assert.deepEqual(classifyForDefrag([]), { deletable: [], kept: [] });
+});
+
+// Belt-and-braces traversal/malformed-input guards — SPIFFS is flat, so
+// these almost certainly never occur as literal /list keys, but the
+// docstring's "default-deny by construction" claim is about ANY input.
+
+test('classifyForDefrag: /p/../config.json (traversal segment) is kept, not deletable', () => {
+  assert.deepEqual(classifyForDefrag(['/p/../config.json']), { deletable: [], kept: ['/p/../config.json'] });
+});
+
+test('classifyForDefrag: /p/../../config.json (double traversal) is kept', () => {
+  assert.deepEqual(classifyForDefrag(['/p/../../config.json']), { deletable: [], kept: ['/p/../../config.json'] });
+});
+
+test('classifyForDefrag: /l/../pixelmap.dat (traversal out of the playlist prefix) is kept', () => {
+  assert.deepEqual(classifyForDefrag(['/l/../pixelmap.dat']), { deletable: [], kept: ['/l/../pixelmap.dat'] });
+});
+
+test('classifyForDefrag: /p/./../obconf.dat (mixed "." and ".." segments) is kept', () => {
+  assert.deepEqual(classifyForDefrag(['/p/./../obconf.dat']), { deletable: [], kept: ['/p/./../obconf.dat'] });
+});
+
+test('classifyForDefrag: //p/foo (doubled leading separator) is kept', () => {
+  assert.deepEqual(classifyForDefrag(['//p/foo']), { deletable: [], kept: ['//p/foo'] });
+});
+
+test('classifyForDefrag: "/p/a.gz " (trailing whitespace) is kept — cannot dodge the .gz exclusion by padding', () => {
+  assert.deepEqual(classifyForDefrag(['/p/a.gz ']), { deletable: [], kept: ['/p/a.gz '] });
+});
+
+test('classifyForDefrag: golden — partitions the Appendix\'s exact observed device inventory', () => {
+  // PBZ-PLAN.md Appendix, live 2026-07-19: 24x /p/<id> patterns,
+  // /l/_defaultplaylist_, config.json + config2.json, pixelmap.txt +
+  // pixelmap.dat, obconf.dat (1 B stub), recovery.html.gz + index.html.gz.
+  const patterns = Array.from({ length: 24 }, (_, i) => `/p/pattern${String(i).padStart(2, '0')}`);
+  const inventory = [
+    ...patterns,
+    '/l/_defaultplaylist_',
+    'config.json',
+    'config2.json',
+    'pixelmap.txt',
+    'pixelmap.dat',
+    'obconf.dat',
+    'recovery.html.gz',
+    'index.html.gz',
+  ];
+  const { deletable, kept } = classifyForDefrag(inventory);
+  assert.deepEqual(deletable.sort(), [...patterns, '/l/_defaultplaylist_'].sort());
+  assert.deepEqual(kept.sort(), [
+    '/config.json', '/config2.json', '/pixelmap.txt', '/pixelmap.dat',
+    '/obconf.dat', '/recovery.html.gz', '/index.html.gz',
+  ].sort());
+  assert.equal(deletable.length, 25);
+  assert.equal(kept.length, 7);
+  assert.equal(deletable.length + kept.length, inventory.length);
 });

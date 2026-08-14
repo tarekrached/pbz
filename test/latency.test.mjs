@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import {
   WARN_FLOOR_MS, WARN_MULTIPLIER, EMA_ALPHA,
   updateBaseline, warnThresholdMs, recordSample, parseLatencyState, applySample, timeOp, makeWatchdog,
+  defragHealthGate, buildDefragHealthGate,
 } from '../lib/latency.mjs';
 import { Pixelblaze } from '../lib/pixelblaze.mjs';
 
@@ -80,6 +81,102 @@ test('recordSample: threshold is computed from the PRIOR baseline, not the updat
   const { thresholdMs, baselineMs } = recordSample(1000, 3001);
   assert.equal(thresholdMs, 3000);
   assert.notEqual(baselineMs, thresholdMs / WARN_MULTIPLIER); // baseline moved, threshold didn't recompute from it
+});
+
+// ---------- defragHealthGate (PBZ-PLAN.md Chunk 28) ----------
+
+test('defragHealthGate: sample under the floor, no baseline -> ok', () => {
+  assert.deepEqual(defragHealthGate(500, null), { ok: true, thresholdMs: WARN_FLOOR_MS });
+});
+
+test('defragHealthGate: EXPLICIT cold-start-over-floor refusal — diverges from recordSample on purpose', () => {
+  // recordSample(null, 999999).warn is FALSE (cold start never warns — see
+  // its own test above). defragHealthGate must NOT inherit that: a one-shot
+  // gate with no "next sample" to fall back on can't stay silent just
+  // because this happens to be a host with no history yet.
+  assert.equal(recordSample(null, 999999).warn, false);
+  const gate = defragHealthGate(999999, null);
+  assert.equal(gate.ok, false);
+  assert.equal(gate.thresholdMs, WARN_FLOOR_MS);
+});
+
+test('defragHealthGate: sample exactly at the floor threshold is ok (<=, not <)', () => {
+  assert.deepEqual(defragHealthGate(WARN_FLOOR_MS, null), { ok: true, thresholdMs: WARN_FLOOR_MS });
+});
+
+test('defragHealthGate: one ms over the floor threshold refuses', () => {
+  const gate = defragHealthGate(WARN_FLOOR_MS + 1, null);
+  assert.equal(gate.ok, false);
+  assert.equal(gate.thresholdMs, WARN_FLOOR_MS);
+});
+
+test('defragHealthGate: large baseline -> the multiplier governs, not the floor', () => {
+  // baseline 1000 -> threshold = max(3000, 2000) = 3000
+  assert.deepEqual(defragHealthGate(3000, 1000), { ok: true, thresholdMs: 3000 });
+  assert.equal(defragHealthGate(3001, 1000).ok, false);
+});
+
+test('defragHealthGate: does not reuse recordSample\'s warn flag — same inputs, different shape/semantics', () => {
+  const sample = recordSample(1000, 3001);
+  const gate = defragHealthGate(3001, 1000);
+  // recordSample's warn means "the sample IS bad" (true here); the gate's ok
+  // means "the sample IS fine" — same underlying comparison, inverted sense,
+  // and the gate is its own function, not recordSample's return value reused.
+  assert.equal(sample.warn, true);
+  assert.equal(gate.ok, false);
+  assert.equal(gate.thresholdMs, sample.thresholdMs);
+});
+
+// ---------- buildDefragHealthGate (composed with makeWatchdog) ----------
+//
+// REGRESSION COVERAGE for a real bug: buildDefragHealthGate and makeWatchdog
+// each passed their own isolated unit tests while still composing into a
+// broken CLI — exactly the "the two unit suites passing in isolation is
+// exactly why this escaped" failure mode. In the real call sequence,
+// `pb.defrag(undefined, { healthGate: buildDefragHealthGate(host, {...}) })`
+// builds the gate (as part of that argument list) BEFORE defrag()'s own
+// health-check write runs, and that write reports through the SAME
+// onWriteLatency -> makeWatchdog -> writeState path that updates the
+// persisted baseline. These tests wire both functions together against a
+// shared in-memory store and reproduce that exact ordering, so a future
+// change that moves the baseline read back inside the closure (reintroducing
+// the bug) fails here even if each function's own isolated tests stay green.
+
+function makeFakeStateStore(initial = { hosts: {} }) {
+  let state = initial;
+  return { readState: () => state, writeState: (s) => { state = s; } };
+}
+
+test('buildDefragHealthGate + makeWatchdog: cold host, 6000ms health-check sample -> refused', () => {
+  const host = 'fake-host';
+  const store = makeFakeStateStore(); // no prior baseline for this host
+  const onWriteLatency = makeWatchdog({ host, readState: store.readState, writeState: store.writeState, warn: () => {} });
+
+  // Build the gate FIRST, exactly like pbz.mjs's argument-list ordering —
+  // this is the synchronous snapshot the fix depends on.
+  const gate = buildDefragHealthGate(host, { readState: store.readState });
+
+  // Then simulate defrag()'s own timed setConfig reporting its sample —
+  // this is the write that, pre-fix, would have poisoned a LAZY read.
+  onWriteLatency('setConfig', 6000);
+
+  const result = gate(6000);
+  assert.equal(result.ok, false, 'a cold host must still be able to refuse — a lazy read would have made this unrefusable');
+  assert.match(result.message, /no baseline yet, 2s floor/);
+});
+
+test('buildDefragHealthGate + makeWatchdog: warm 1000ms baseline, 5000ms sample -> refused', () => {
+  const host = 'fake-host';
+  const store = makeFakeStateStore({ hosts: { [host]: { baselineMs: 1000 } } });
+  const onWriteLatency = makeWatchdog({ host, readState: store.readState, writeState: store.writeState, warn: () => {} });
+
+  const gate = buildDefragHealthGate(host, { readState: store.readState }); // captures baselineMs=1000, pre-write
+
+  onWriteLatency('setConfig', 5000); // EMA-updates the STORED baseline toward 5000 — must not affect the gate's already-captured snapshot
+
+  const result = gate(5000);
+  assert.equal(result.ok, false, 'threshold from the PRE-write baseline (1000 -> 3000) must govern, not the post-write one');
+  assert.match(result.message, /baseline 1000ms/);
 });
 
 // ---------- parseLatencyState ----------
