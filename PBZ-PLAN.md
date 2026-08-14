@@ -46,6 +46,10 @@ protects — done); all are buildable before the sensor board lands (~week of 20
 - [x] **22 — TypeScript declarations** (S — added 2026-08-11, post-Chunk-10)
 - [x] **23 — signature guard + JSDoc doc blocks** (S — added 2026-08-11)
 - [x] **24 — response-correlation & fail-loud pass** (M — added 2026-08-11, from an independent review)
+- [ ] **25 — storage-pressure surfacing** (S — added 2026-08-14, from the SPIFFS death-spiral post-mortem)
+- [ ] **26 — write-latency watchdog** (S–M — same origin; the signal that would have caught it weeks early)
+- [ ] **27 — backup-freshness nudge** (S — the `.pbb` is what made the incident survivable)
+- [ ] **28 — `defrag`: OTA deep clean** (M — do after 25+26; they are its go/no-go gate)
 
 Suggested order by value: **0, 1, 2, 11, 4, 3, 7, 5, 6, 12, 13, 8, 9, 10.**
 Remaining, by value: **20, 14, 15 done**; **16 implemented but unverified** (`seq time` still
@@ -53,6 +57,8 @@ untested — device incident 2026-07-20, see Chunk 20's second-wedge note); next
 10 last** — but 17 jumps the queue the day the sensor board arrives (it *is* the bring-up tool).
 21 sits outside the queue: don't build it until its trigger condition is met (**still unmet** after
 the 2026-07-20 incident — see its note before assuming otherwise).
+**25–28 (added 2026-08-14)** come from the incident's completed post-mortem: order 25 → 26 → 27 → 28
+(28 hard-depends on 26's threshold for its health gate; 25 and 27 are independent quick wins).
 
 **Re-scoped 2026-07-20 for open-sourcing:** the
 pre-publish gate is **15, 16, then 10** (both S and useful, so they land before the repo goes
@@ -887,6 +893,97 @@ CLI may never need.
   Neither is the parallel-invocation shape this chunk addresses. The mitigation that incident
   actually argues for is Chunk 20's pre-flight consumer check — a cross-process lock would have
   bought exactly zero. Keep this chunk unbuilt.
+
+### Chunks 25–28 — SPIFFS death-spiral defenses (added 2026-08-14, from a completed post-mortem)
+
+Shared context, so each chunk below stays terse. The 2026-07-20 incident board
+(felix-led-project, `INCIDENT-2026-07-20.md`, resolved 2026-08-14 and confirmed by Ben Hencke
+in forum t/4738) died of SPIFFS fragmentation: 74% full, 26% free, but the free space smeared
+across all 368 blocks with **zero fully-erased blocks**. On SPIFFS every write then needs
+garbage collection, GC itself writes and chain-reacts, and — because ESP32 flash ops suspend
+the flash cache the firmware executes from — the *whole* firmware loop degrades, network
+included. End state: tiny writes take minutes or never complete, and the remedy (deleting
+files) needs writes too, so **the remedy has a window that closes**. The board recovered only
+via serial `erase_region` of the FS + `.stfu` reinstall + `.pbb` restore.
+
+What's observable remotely: **storage fill** (`storageUsed`/`storageSize`, already on the
+config frame — the fill is the leading indicator, since GC headroom is what runs out) and
+**small-write latency** (the disease itself, visible early: seconds-long tiny writes precede
+the cliff by weeks — the incident audit found flash anomalies *before* the first wedge). The
+true variable, fully-erased block count, is invisible to any API; only a flash dump shows it.
+These chunks turn the two proxies into warnings, and the remedy into a command that refuses to
+run outside its window. Fleet calibration at time of writing: wall board (XL storage variant,
+2.88MB FS) 36%; recovered spare (S variant, 1.4MB FS) already 40% with an ordinary pattern
+load; the incident board died at 74% after months of churn.
+
+### Chunk 25 — storage-pressure surfacing
+
+- `info` already prints `storage: used / size (N%)`. Add a warning line at **≥60%** and a loud
+  one at **≥75%** (cite the incident: a board died at 74%). Thresholds are constants, not
+  config — this is a smoke alarm, not a preference.
+- `pb.config.json`'s `expect` block (asserted by `config --check`) learns **`maxStoragePct`**.
+  Exceeding it makes `--check` exit nonzero like any other expectation failure, so existing
+  cron/pre-flight wiring inherits the alarm for free.
+- `backup` prints the storage line after writing the `.pbb` — the moment someone is already
+  thinking about device state.
+- **Acceptance:** hermetic tests for the threshold math and `--check` wiring; live check that
+  both house boards print the line and neither warns.
+- **Size:** S.
+
+### Chunk 26 — write-latency watchdog
+
+- pbz already awaits acks on writes (Chunk 24 made them fail loud); it just never looked at the
+  clock. Time every small-write round trip (`setConfig`, `delete`, control writes — not binary
+  transfers, whose duration scales with payload) and keep a tiny rolling per-host baseline in a
+  state file (`~/.pbz/latency.json`, host-keyed; a missing/corrupt file is a fresh start, never
+  an error).
+- Warn on stderr when a small write exceeds **max(3× baseline, 2 s)**: name the number, name
+  the disease, point at `info`'s storage line. Never block or retry — this is telemetry with an
+  opinion, not flow control.
+- No active canary probe (save+delete of a test file was considered and rejected: it *adds* the
+  churn it measures; passive timing gets the same signal free).
+- **Acceptance:** hermetic tests with a fake clock (baseline update, cold start, threshold
+  crossing); live check that normal operations on a healthy board stay silent.
+- **Size:** S–M.
+
+### Chunk 27 — backup-freshness nudge
+
+- Before destructive multi-file operations (`restore --prune`; extend if others appear), look
+  for the newest local `*.pbb` whose contents match the target device (chipId in the filename
+  per the `backup` naming convention, cwd + the config-walk directory). Older than **7 days**
+  or absent → print a one-line nudge with the exact `backup` command. Nudge, not gate: no
+  prompt, no flag, no refusal — the incident lesson is that the backup you want is the one
+  taken *before* you needed it.
+- **Acceptance:** hermetic test of the freshness scan; live run showing the nudge and its
+  silence after a fresh `backup`.
+- **Size:** S.
+
+### Chunk 28 — `defrag`: OTA deep clean
+
+The firmware exposes no GC/format endpoint (`SPIFFS_gc()` exists in the library but isn't
+surfaced — worth a feature request to Ben someday, though FASTFFS may obsolete it). But GC runs
+as a side effect of writes, and deletes give it something reclaimable, so a full reclamation is
+composable over the API **on a still-healthy board**: backup → delete all pattern/playlist
+files → restore. After the mass delete most blocks hold little live data, GC's copy step is
+nearly free, blocks get erased wholesale, and the restore lands in freshly-erased space —
+the serial-erase recovery, minus the web-app region, minus the bench.
+
+- `pbz defrag`: (1) take a fresh `.pbb` this run and **verify it decodes** (Chunk 14 parser)
+  before anything else; (2) **health gate**: time one small write; if it exceeds Chunk 26's
+  threshold, refuse with an explanation — a board already grinding may not survive the delete
+  phase (measured on the incident board: deletes never completed), and the right move there is
+  triage, not defrag; (3) delete `/p/*` and `/l/*` **only** — never `.gz` (the web app lives on
+  the same FS and losing it is the incident's recovery-mode dance), never `config*.json`,
+  never `pixelmap.*`, never `obconf.dat`; (4) restore from the just-taken `.pbb`, skipping
+  byte-identical files is moot here (everything was deleted) but the restore path must confirm
+  each file; (5) verify: `list` matches the pre-delete inventory, and print storage before/after.
+- One connection throughout (Chunk 20's shape), fail loud mid-sequence and say exactly how far
+  it got — a half-defragged board with a verified `.pbb` in hand is inconvenient, not lost.
+- `--yes` required, like `restore`.
+- **Acceptance:** hermetic tests for the file-classification rules (the never-delete list is
+  the safety property); live run on the S-variant spare (the board that exists to absorb this
+  kind of test), showing inventory identical and storage-used unchanged or lower.
+- **Size:** M.
 
 ---
 
