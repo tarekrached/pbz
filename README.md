@@ -79,7 +79,9 @@ pbz playlist set "Rainbow Worms":5000 "Cool Aura":3000
 
 # --- device ---
 pbz info                            # firmware, FPS, memory, uptime, storage, sync group
+                                    #   storage warns at 60% full, CRITICAL at 75%
 pbz config [--check]                # LED settings; --check asserts your `expect` block
+                                    #   expect.maxStoragePct fails --check if storage exceeds it
 pbz set-config colorOrder=WRGB pixelCount=170
 pbz ping
 pbz reboot
@@ -91,7 +93,7 @@ pbz map get --coords                # the normalized coords the device actually 
 pbz map set map.js                  # compute + push the geometry AND persist the source
 
 # --- backup ---
-pbz backup [file.pbb]               # every device file into one JSON
+pbz backup [file.pbb]               # every device file into one JSON; prints the storage line after
 pbz restore file.pbb [--prune] --yes
 pbz backup --fs-image [file.bin]    # device-side full-flash image (heavier, opt-in)
 

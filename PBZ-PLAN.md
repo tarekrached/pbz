@@ -46,7 +46,7 @@ protects — done); all are buildable before the sensor board lands (~week of 20
 - [x] **22 — TypeScript declarations** (S — added 2026-08-11, post-Chunk-10)
 - [x] **23 — signature guard + JSDoc doc blocks** (S — added 2026-08-11)
 - [x] **24 — response-correlation & fail-loud pass** (M — added 2026-08-11, from an independent review)
-- [ ] **25 — storage-pressure surfacing** (S — added 2026-08-14, from the SPIFFS death-spiral post-mortem)
+- [x] **25 — storage-pressure surfacing** (S — added 2026-08-14, from the SPIFFS death-spiral post-mortem)
 - [ ] **26 — write-latency watchdog** (S–M — same origin; the signal that would have caught it weeks early)
 - [ ] **27 — backup-freshness nudge** (S — the `.pbb` is what made the incident survivable)
 - [ ] **28 — `defrag`: OTA deep clean** (M — do after 25+26; they are its go/no-go gate)
