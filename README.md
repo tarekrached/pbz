@@ -97,6 +97,7 @@ pbz map set map.js                  # compute + push the geometry AND persist th
 pbz backup [file.pbb]               # every device file into one JSON; prints the storage line after
 pbz restore file.pbb [--prune] --yes
 pbz backup --fs-image [file.bin]    # device-side full-flash image (heavier, opt-in)
+pbz defrag --yes                    # OTA deep clean for SPIFFS fragmentation — see "defrag" below
 
 # --- power ---
 pbz power budget                    # the supply chain, and which link is weakest
@@ -173,6 +174,35 @@ agent-driven bursts are exactly the risky shape:
   alive, event loop blocked. If something that talks to your Pixelblaze goes
   unresponsive, suspect the device first, and cut its power so the blocked
   connects fail fast.
+
+## defrag: OTA deep clean
+
+The firmware exposes no GC/format endpoint — `SPIFFS_gc()` exists in the underlying
+library but isn't surfaced over the wire. But garbage collection runs as a side
+effect of writes, and deletes give it something reclaimable, so a full reclamation
+is composable over the existing API **on a still-healthy board**: backup → delete
+every pattern + the playlist → restore from that same backup → reboot → verify.
+After the mass delete most flash blocks hold little live data, so GC's copy step is
+nearly free, blocks get erased wholesale, and the restore lands in freshly-erased
+space — the same outcome a serial-erase recovery gets you, minus the web-app
+region, minus the bench.
+
+```sh
+pbz defrag --yes
+```
+
+It never touches `.gz` (the web app lives on the same filesystem as patterns, and
+losing it is the incident-recovery dance this exists to avoid), `config*.json`,
+`pixelmap.*`, or `obconf.dat` — only `/p/*` and `/l/*`, and only paths already
+present in a fresh backup it takes and decode-verifies as the very first step,
+before touching the device at all. It refuses, deleting nothing, if a one-shot
+health-check write is already slow: a board already grinding may not survive the
+delete phase (measured on the incident board itself — its own deletes never
+completed), and the right move there is triage, not defrag.
+
+Side effect worth knowing: because `defrag` always takes a fresh backup first, it
+also silences `restore --prune`'s freshness nudge for the next 7 days — you get
+the newest possible `.pbb` on disk as a byproduct.
 
 ## What pbz trusts
 
