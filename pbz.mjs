@@ -98,13 +98,14 @@
       WiFi config is never included in either direction.
 */
 
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { Pixelblaze } from './lib/pixelblaze.mjs';
 import { stableId, prettyName } from './lib/pbp.mjs';
 import { budgetChain, solveCapPercent, estimateDraw } from './lib/power.mjs';
-import { readConfig, resolveHost as hostFromConfig, checkExpectations, validateMaxStoragePct } from './lib/config.mjs';
+import { readConfig, resolveHost as hostFromConfig, checkExpectations, validateMaxStoragePct, findConfig } from './lib/config.mjs';
 import { storagePct, storageLevel } from './lib/storage.mjs';
+import { scanBackupFreshness } from './lib/backup.mjs';
 
 // ---------- args & host resolution ----------
 const argv = process.argv.slice(2);
@@ -167,6 +168,51 @@ function printStorageLine(used, size) {
 // the command is done; otherwise the open socket would keep the process alive.
 const instances = [];
 function mkPixelblaze(host) { const pb = new Pixelblaze(host); instances.push(pb); return pb; }
+// PBZ-PLAN.md Chunk 27: candidate .pbb files for the freshness nudge — cwd plus
+// wherever pb.config.json actually lives, deduped. Missing/unreadable dirs and
+// files that vanish mid-stat are skipped, never thrown — this is a nudge, not
+// a gate, and shouldn't be able to abort a restore on its own.
+async function listPbbEntries(dirs) {
+  const seen = new Set();
+  const entries = [];
+  for (const d of dirs) {
+    const resolved = path.resolve(d);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    let names;
+    try { names = await readdir(resolved); } catch { continue; }
+    for (const name of names) {
+      if (!/\.pbb$/i.test(name)) continue;
+      const p = path.join(resolved, name);
+      try { entries.push({ path: p, mtimeMs: (await stat(p)).mtimeMs }); } catch { /* vanished mid-scan */ }
+    }
+  }
+  return entries;
+}
+// Nudge, not gate: NEVER throws — prints at most one stderr line and always
+// returns, even on a dead ws (restoreBackup is pure HTTP and "ws dead, HTTP
+// alive" is the documented recovery scenario this command serves; a nudge
+// that can abort the restore it's meant to protect would defeat the point).
+async function nudgeIfBackupStale(pb, host) {
+  try {
+    const cfg = await pb.getConfig();
+    if (cfg.chipId == null) return; // can't check freshness for a device we can't identify
+    const dirs = [process.cwd()];
+    const cfgPath = findConfig('pb.config.json');
+    if (cfgPath) dirs.push(path.dirname(cfgPath));
+    const entries = await listPbbEntries(dirs);
+    const { fresh, file, ageMs } = scanBackupFreshness(entries, cfg.chipId);
+    if (fresh) return;
+    if (!file) {
+      console.error(`warning: no local .pbb backup found for this device (chipId ${cfg.chipId}) — run \`pbz backup --host=${host}\` first`);
+    } else {
+      const days = Math.round(ageMs / 86400000);
+      console.error(`warning: newest matching backup is ${days}d old (${file}) — run \`pbz backup --host=${host}\` first`);
+    }
+  } catch (e) {
+    console.error(`warning: couldn't check backup freshness (${e.message}) — continuing`);
+  }
+}
 function parseConfigValue(v) {
   if (v === 'true') return true;
   if (v === 'false') return false;
@@ -430,8 +476,10 @@ try {
   } else if (cmd === 'restore') {
     const host = resolveHost();
     const file = pos[1]; if (!file) die('usage: restore <file.pbb> [--prune] --yes');
+    const pb = mkPixelblaze(host);
+    if (flags.prune) await nudgeIfBackupStale(pb, host);
     if (!flags.yes) die('restore is destructive (overwrites device files + reboots) — pass --yes to confirm. WiFi config is never included in a backup.');
-    const res = await mkPixelblaze(host).restoreBackup(file, { prune: !!flags.prune });
+    const res = await pb.restoreBackup(file, { prune: !!flags.prune });
     console.log(`restored ${res.restored} files${res.pruned.length ? `, pruned ${res.pruned.length}` : ''} — rebooting`);
   } else if (cmd === 'delete') {
     const host = resolveHost();

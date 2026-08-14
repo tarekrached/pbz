@@ -48,7 +48,7 @@ protects — done); all are buildable before the sensor board lands (~week of 20
 - [x] **24 — response-correlation & fail-loud pass** (M — added 2026-08-11, from an independent review)
 - [x] **25 — storage-pressure surfacing** (S — added 2026-08-14, from the SPIFFS death-spiral post-mortem)
 - [ ] **26 — write-latency watchdog** (S–M — same origin; the signal that would have caught it weeks early)
-- [ ] **27 — backup-freshness nudge** (S — the `.pbb` is what made the incident survivable)
+- [x] **27 — backup-freshness nudge** (S — the `.pbb` is what made the incident survivable)
 - [ ] **28 — `defrag`: OTA deep clean** (M — do after 25+26; they are its go/no-go gate)
 
 Suggested order by value: **0, 1, 2, 11, 4, 3, 7, 5, 6, 12, 13, 8, 9, 10.**
@@ -508,6 +508,13 @@ so zero-deps holds with no archive code.
   a second websocket right after the first's post-reboot reconnect hit exactly the client-budget
   contention `README.md` "Device etiquette" already warns about (transient `websocket:
   connection failed`; resolved by reusing one connection, no code change needed).
+
+*Amended by Chunk 27: `saveBackup()`'s default filename gained a chipId segment and a
+sub-day UTC timestamp, trailing `Z` (`<name>-<chipId>-<date>-<time>Z.pbb`, e.g.
+`wall-42-2026-08-14-183012Z.pbb`) so the freshness scan can match a `.pbb` to the device
+that made it by filename alone, and same-day scripted backups (Chunk 28's defrag included)
+don't overwrite each other and silently replace the only good backup with a post-damage
+one — `.pbb`s written before this change won't match and should be re-taken.*
 
 ### Chunk 15 — color-picker controls in `set`
 - `hsvPicker*`/`rgbPicker*` controls take a 3-element array, components 0..1 — the web UI sends

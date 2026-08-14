@@ -272,6 +272,8 @@ Honest list, not a roadmap I'm promising to finish.
   the `.mjs` sources carry no JSDoc.
 - `restore` is overwrite-only unless you pass `--prune`. The web UI's own
   restore wipes first; this is deliberately gentler.
+- `restore --prune` nudges on stderr (not a gate) when no local `.pbb` for
+  this device is newer than 7 days.
 - WiFi credentials are never in a `.pbb`, in either direction. That's the
   firmware's behavior, not a choice pbz makes.
 

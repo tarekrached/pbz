@@ -325,8 +325,8 @@ export declare class Pixelblaze {
   /**
    * Snapshot every file on the device into one JSON `.pbb`. Skips the `*.gz`
    * web-app blobs and verifies each fetched file against the size the device
-   * reported. Defaults to `<devicename>-<date>.pbb`. WiFi config is never
-   * included, by the firmware's design.
+   * reported. Defaults to `<name>-<chipId>-<date>-<time>Z.pbb`. WiFi config is
+   * never included, by the firmware's design.
    */
   saveBackup(file?: string): Promise<{ file: string; count: number }>;
 
