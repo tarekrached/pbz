@@ -38,18 +38,18 @@
     pbz power budget                         print the supply/breaker/wire/connector chain and which link binds
     pbz power                                estimate the ACTIVE pattern's real draw (peak/mean, W-extraction modeled)
     pbz power patterns/foo.js                same, for a candidate pattern (runs it live first, like `run`)
-    pbz config [--check]                     print device/LED settings; --check asserts pb.config.json's `expect` block
+    pbz config [--check]                     print device/LED settings; --check asserts pb.config.json's `expect` block (colorOrder, pixelCount, maxStoragePct, …)
     pbz set-config key=value […]             update device/LED settings (colorOrder, pixelCount, name, …)
     pbz delete <Name or id>                  delete a saved pattern
     pbz export <Name or id> [file.epe]       fetch source + preview, write a .epe (defaults to "<Name>.epe")
     pbz import <file.epe>                    recompile a .epe's source locally and save + activate it
-    pbz info                                 firmware/hardware, FPS, memory, uptime, storage, group/peers
+    pbz info                                 firmware/hardware, FPS, memory, uptime, storage (warns ≥60%, CRITICAL ≥75%), group/peers
     pbz map get [--coords] > map.js          fetch the pixel-map source (or --coords for the normalized render coords)
     pbz map set map.js                       compute + push the live render geometry AND persist the source
     pbz reboot                               restart the device (drops off the network for several seconds)
     pbz ping                                 round-trip latency to the device
     pbz discover [--ms=3000]                 listen for Pixelblaze UDP beacons on the LAN, print host(s) found
-    pbz backup [file.pbb]                    snapshot every device file (patterns, config, playlist, map) to one JSON .pbb
+    pbz backup [file.pbb]                    snapshot every device file (patterns, config, playlist, map) to one JSON .pbb; prints the storage line after
     pbz backup --fs-image [file.bin]         device-side full-flash image (POST /backupFsImage); restore by holding the button at power-up
     pbz restore <file.pbb> [--prune] --yes   destructive: POST each file back + reboot; --prune also deletes device files absent from the backup
   Notes:
@@ -78,6 +78,8 @@
       `save` prints the same peak estimate automatically using the thumbnail-capture frames.
     - `config --check` asserts the LED settings declared in pb.config.json's `expect` block
       (colorOrder, pixelCount, …) — run it if the rig's behavior looks off before touching wiring.
+      `expect.maxStoragePct` asserts storage usage instead of a config key — the same 60%/75%
+      warn/CRITICAL thresholds `info` prints, just enforced as a --check failure.
     - `export`/`import` round-trip a pattern through a .epe file (same shape the web UI's
       Export button writes) — a backup/portability path independent of the device's flash.
     - The device can't evaluate the map JS itself (same reason it can't compile patterns) —
@@ -101,7 +103,8 @@ import path from 'node:path';
 import { Pixelblaze } from './lib/pixelblaze.mjs';
 import { stableId, prettyName } from './lib/pbp.mjs';
 import { budgetChain, solveCapPercent, estimateDraw } from './lib/power.mjs';
-import { readConfig, resolveHost as hostFromConfig } from './lib/config.mjs';
+import { readConfig, resolveHost as hostFromConfig, checkExpectations, validateMaxStoragePct } from './lib/config.mjs';
+import { storagePct, storageLevel } from './lib/storage.mjs';
 
 // ---------- args & host resolution ----------
 const argv = process.argv.slice(2);
@@ -143,6 +146,21 @@ function formatUptime(ms) {
   if (ms == null) return 'unknown';
   const h = Math.floor(ms / 3.6e6), m = Math.floor(ms / 6e4) % 60, s = Math.floor(ms / 1e3) % 60;
   return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+// Storage-pressure line (PBZ-PLAN.md Chunk 25) — shared by info/config
+// --check/backup so the warning reads the same everywhere. pct is null-safe
+// (storagePct already handles missing/zero size); print nothing when null,
+// same as the old inline `if (info.storageSize)` guard.
+function printStorageLine(used, size) {
+  const pct = storagePct(used, size); // integer — see storagePct's comment
+  if (pct == null) return;
+  console.log(`storage: ${used} / ${size} bytes (${pct}%)`);
+  const level = storageLevel(pct);
+  if (level === 'warn') {
+    console.log(`warning: storage at ${pct}% — free space before it climbs (pbz backup, delete unused patterns)`);
+  } else if (level === 'critical') {
+    console.log(`CRITICAL: storage at ${pct}% — a board in this project died at 74% used (SPIFFS with zero free blocks); back up now and free space`);
+  }
 }
 // Track every Pixelblaze instance the command creates so its (now shared,
 // reused-across-calls — PBZ-PLAN.md Chunk 20) connection can be closed once
@@ -251,7 +269,8 @@ try {
     }
   } else if (cmd === 'config') {
     const host = resolveHost();
-    const cfg = await mkPixelblaze(host).getConfig();
+    const pb = mkPixelblaze(host);
+    const cfg = await pb.getConfig();
     if (flags.check) {
       // What "correct" means is per-install, so it's declared in pb.config.json's
       // `expect` block rather than hardcoded here. Getting colorOrder or
@@ -261,11 +280,19 @@ try {
       if (!expect || !Object.keys(expect).length) {
         die('config --check needs an "expect" block in pb.config.json, e.g. {"expect": {"colorOrder": "WRGB", "pixelCount": 170}} — see pb.config.example.json');
       }
-      const problems = Object.entries(expect)
-        .filter(([k, want]) => cfg[k] !== want)
-        .map(([k, want]) => `${k} is ${cfg[k]}, expected ${want}`);
+      // Validate the cap BEFORE spending a round-trip on it — a typo'd
+      // maxStoragePct should read as a config error, not a spurious "device
+      // unreachable" from the status fetch it triggered.
+      validateMaxStoragePct(expect);
+      // storageUsed/storageSize live on the STATUS frame, not config — only
+      // pay for it when maxStoragePct is actually being asserted, and reuse
+      // this same connection (pb, not a fresh mkPixelblaze()) to fetch it.
+      const status = 'maxStoragePct' in expect ? await pb.getStatus() : null;
+      if (status) printStorageLine(status.storageUsed, status.storageSize);
+      const problems = checkExpectations(cfg, status, expect);
       if (problems.length) { for (const p of problems) console.error('drift: ' + p); die('config --check failed'); }
-      console.log('config check: ok (' + Object.entries(expect).map(([k, v]) => `${k}=${v}`).join(', ') + ')');
+      const summary = Object.entries(expect).map(([k, v]) => k === 'maxStoragePct' ? `${k}≤${v}` : `${k}=${v}`).join(', ');
+      console.log(`config check: ok (${summary})`);
     } else {
       for (const [k, v] of Object.entries(cfg)) console.log(`  ${k} = ${v}`);
     }
@@ -338,7 +365,7 @@ try {
     console.log(`fps: ${info.fps?.toFixed(2) ?? 'unknown'}`);
     console.log(`memory: ${info.mem ?? 'unknown'} free`);
     console.log(`uptime: ${formatUptime(info.uptime)}`);
-    if (info.storageSize) console.log(`storage: ${info.storageUsed} / ${info.storageSize} bytes (${(100 * info.storageUsed / info.storageSize).toFixed(0)}%)`);
+    printStorageLine(info.storageUsed, info.storageSize);
     const exp = [info.expansion.sensorBoard && 'SB 1.0', info.expansion.sixAxis && '6 Axis'].filter(Boolean);
     console.log(`expansion: ${exp.length ? exp.join(' + ') : 'none'}`);
     console.log(`group: ${info.groupRole} (node ${info.nodeId}${info.leaderId ? `, leader ${info.leaderId}` : ''})`);
@@ -388,6 +415,17 @@ try {
       process.stdout.write('Fetching file list … ');
       const res = await pb.saveBackup(pos[1]);
       console.log(`ok — ${res.count} files -> ${res.file}`);
+      // The backup itself already succeeded — this is a bonus status read on
+      // the moment someone's looking at device state, never a reason to fail
+      // the command. "ws dead, HTTP alive" is a real recovery scenario
+      // (README "Device etiquette & recovery"), so a status fetch that can't
+      // complete here is expected, not exceptional.
+      try {
+        const status = await pb.getStatus();
+        printStorageLine(status.storageUsed, status.storageSize);
+      } catch (e) {
+        console.error(`note: backup saved, but storage status could not be read (${e.message})`);
+      }
     }
   } else if (cmd === 'restore') {
     const host = resolveHost();

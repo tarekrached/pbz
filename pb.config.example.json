@@ -2,9 +2,10 @@
   "_comment": "Copy to pb.config.json (gitignored) and put your own Pixelblaze's address in it. pbz searches up from the current directory first, then its own install directory, so a project can keep its own copy. --host=… and $PB_HOST override this.",
   "host": "192.168.1.50",
 
-  "_expect_comment": "Optional. `pbz config --check` asserts every key here against the device's live settings and exits non-zero on drift. Worth pinning whatever, if it silently changed, would make your patterns render wrong: colorOrder and pixelCount are the usual two.",
+  "_expect_comment": "Optional. `pbz config --check` asserts every key here against the device's live settings and exits non-zero on drift. Worth pinning whatever, if it silently changed, would make your patterns render wrong: colorOrder and pixelCount are the usual two. `maxStoragePct` is different — it asserts storage usage, not a config key. The example below pins it at `pbz info`'s warn threshold (60%), so `--check` fails right as the soft warning would first print; set it lower to get the failure earlier, or raise it toward the 75% CRITICAL line if you want --check to stay quiet through the warn zone.",
   "expect": {
     "colorOrder": "GRB",
-    "pixelCount": 100
+    "pixelCount": 100,
+    "maxStoragePct": 60
   }
 }

@@ -22,9 +22,25 @@ class FakeWS {
   deliver(data) { this.onmessage?.({ data }); }
 }
 
+// Never auto-opens (unlike FakeWS) — lets a test drive onerror/timeout
+// itself to exercise the failed-open cleanup path.
+class NeverOpensWS {
+  constructor(url) { this.url = url; this.sent = []; this.closed = false; }
+  send(data) { this.sent.push(data); }
+  close() { this.closed = true; this.onclose?.(); }
+}
+
 function fakeConnect(idleMs) {
   let sock;
   const c = connect('fake', { idleMs, WebSocketImpl: class extends FakeWS {
+    constructor(url) { super(url); sock = this; }
+  } });
+  return { c, get ws() { return sock; } };
+}
+
+function fakeConnectFailing(idleMs) {
+  let sock;
+  const c = connect('fake', { idleMs, WebSocketImpl: class extends NeverOpensWS {
     constructor(url) { super(url); sock = this; }
   } });
   return { c, get ws() { return sock; } };
@@ -101,4 +117,25 @@ test('without a mark, the orphaned ack WOULD have matched (proves the test bites
   const matched = await c.waitText('{"ack"', 60); // the old, uncorrelated call
   assert.ok(matched, 'sanity: an uncorrelated wait does match the orphan');
   c.close();
+});
+
+test('a failed open closes the socket and disarms the idle timer, instead of leaking both', async () => {
+  // Before the fix: on a rejected `opened` (timeout or onerror), the caller
+  // (Pixelblaze._getConn) never gets a `c` to hold onto, so nothing could
+  // reach in and close() this ws or clear its already-armed idle timer —
+  // both kept the event loop alive for up to idleMs after a connect that
+  // never even opened. `pbz backup` against a wedged ws server showed this:
+  // it prints success, then the process sits for the idle window before
+  // exiting. The timeout and onerror rejection paths share one cleanup
+  // handler in connect(), so exercising onerror here covers both.
+  const { c, ws } = fakeConnectFailing(50);
+  const rejection = assert.rejects(c.opened, /connection failed/);
+  ws.onerror?.({ message: 'connection failed' });
+  await rejection;
+  assert.equal(ws.closed, true, 'a failed open must close its own socket');
+  // If the idle timer were still armed, ws.close() would fire again ~50ms
+  // later — reset the flag and prove nothing touches it a second time.
+  ws.closed = false;
+  await sleep(90);
+  assert.equal(ws.closed, false, 'the idle timer must have been cleared, not just outrun');
 });
