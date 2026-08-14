@@ -6,10 +6,19 @@
 // check that a signature is right, which is what this file is for. Run both
 // with `npm run typecheck`.
 import { Pixelblaze } from '../../lib/pixelblaze.mjs';
-import type { DeviceInfo, PlaylistItem, DiscoveredDevice, ControlValue } from '../../lib/pixelblaze.mjs';
+import type { DeviceInfo, PlaylistItem, DiscoveredDevice, ControlValue, PixelblazeOptions } from '../../lib/pixelblaze.mjs';
 
 export async function exerciseEveryMethod() {
   const pb = new Pixelblaze('192.168.1.50');
+
+  // The onWriteLatency constructor option (PBZ-PLAN.md Chunk 26) — a
+  // constructor option, not a class member, so it's exercised here rather
+  // than against `pb` itself.
+  const opts: PixelblazeOptions = {
+    onWriteLatency: (op: string, ms: number) => { void op; void ms; },
+  };
+  const pbWithWatchdog = new Pixelblaze('192.168.1.51', opts);
+  pbWithWatchdog.close();
 
   const host: string = pb.host;
 

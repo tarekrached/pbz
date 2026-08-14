@@ -45,6 +45,10 @@ export async function everyOneOfTheseIsWrong() {
   // @ts-expect-error
   new Pixelblaze();
 
+  // onWriteLatency is (op: string, ms: number) => void, not a string.
+  // @ts-expect-error
+  new Pixelblaze('h', { onWriteLatency: 'nope' });
+
   // Private internals must not be reachable through the declarations.
   // @ts-expect-error
   await pb._getConn();

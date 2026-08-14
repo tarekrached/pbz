@@ -96,9 +96,20 @@
       overwrite-only unless you pass --prune (the web UI's own restore wipes first; this
       is gentler) and always reboots after — it's destructive enough to require --yes.
       WiFi config is never included in either direction.
+    - Small writes (`set`, `activate`, `set-config`, `delete`, `seq time`) are timed
+      against a tiny per-host baseline in ~/.pbz/latency.json, warning on stderr past
+      3x baseline or 2s (whichever is bigger) — the same SPIFFS-pressure signal as
+      `info`'s storage line, just visible earlier.
+    - Those same interactive write commands now fail after 8s against an unresponsive-
+      but-connected board (was 3s) — deliberate, a late-stage disease signal, not a
+      regression; `run`/`save`'s own internal acks keep the 3s default. Warnings name
+      the underlying library operation, not the CLI verb: `set` -> setControls,
+      `set-config`/`seq time` -> setConfig.
 */
 
 import { readFile, readdir, stat } from 'node:fs/promises';
+import { readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { Pixelblaze } from './lib/pixelblaze.mjs';
 import { stableId, prettyName } from './lib/pbp.mjs';
@@ -106,6 +117,7 @@ import { budgetChain, solveCapPercent, estimateDraw } from './lib/power.mjs';
 import { readConfig, resolveHost as hostFromConfig, checkExpectations, validateMaxStoragePct, findConfig } from './lib/config.mjs';
 import { storagePct, storageLevel } from './lib/storage.mjs';
 import { scanBackupFreshness } from './lib/backup.mjs';
+import { parseLatencyState, makeWatchdog } from './lib/latency.mjs';
 
 // ---------- args & host resolution ----------
 const argv = process.argv.slice(2);
@@ -163,11 +175,68 @@ function printStorageLine(used, size) {
     console.log(`CRITICAL: storage at ${pct}% — a board in this project died at 74% used (SPIFFS with zero free blocks); back up now and free space`);
   }
 }
+// Write-latency watchdog (PBZ-PLAN.md Chunk 26) — per-host rolling baseline
+// for small-write round-trip time, the same SPIFFS-pressure signal as
+// info's storage line but visible earlier (the incident audit found
+// anomalously slow small writes weeks before the board that died at 74%
+// storage actually wedged). The scoring/warning logic itself lives in
+// lib/latency.mjs's makeWatchdog (pure, testable); this file supplies only
+// the filesystem half makeWatchdog is injected with.
+const LATENCY_STATE_FILE = path.join(os.homedir(), '.pbz', 'latency.json');
+// Missing/corrupt is a fresh start, never an error — parseLatencyState()
+// already guarantees that; the try/catch here only covers the file not
+// existing at all (readFileSync throwing ENOENT), which parseLatencyState
+// never sees. Must never throw and never print — a first run is not a
+// warning-worthy event.
+function readLatencyState() {
+  try {
+    return parseLatencyState(readFileSync(LATENCY_STATE_FILE, 'utf8'));
+  } catch {
+    return { hosts: {} };
+  }
+}
+// Concurrent `pbz` invocations racing on this file are last-writer-wins BY
+// DESIGN: it's advisory telemetry (a rolling baseline), not a record anything
+// downstream depends on being exact, so it doesn't earn a lock. Atomic
+// (write a temp file, then rename over the target) so a concurrent reader
+// never sees a torn write — a half-written JSON blob would otherwise wipe
+// every host's baseline, not just the one being updated. MAY throw (a full
+// disk, a permissions problem, …) — makeWatchdog is what catches that and
+// turns it into one warning line; this function's job is only the write.
+function writeLatencyState(state) {
+  mkdirSync(path.dirname(LATENCY_STATE_FILE), { recursive: true });
+  const tmp = `${LATENCY_STATE_FILE}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(state));
+  try {
+    renameSync(tmp, LATENCY_STATE_FILE);
+  } catch (e) {
+    // Don't leave latency.json.<pid>.tmp behind on a failed rename (a full
+    // disk, a permissions problem crossing a mount, …) — best-effort, and
+    // the rename's own error is what actually matters to the caller.
+    try { unlinkSync(tmp); } catch { /* nothing more we can do here */ }
+    throw e;
+  }
+}
 // Track every Pixelblaze instance the command creates so its (now shared,
 // reused-across-calls — PBZ-PLAN.md Chunk 20) connection can be closed once
 // the command is done; otherwise the open socket would keep the process alive.
 const instances = [];
-function mkPixelblaze(host) { const pb = new Pixelblaze(host); instances.push(pb); return pb; }
+function mkPixelblaze(host) {
+  // Wired unconditionally (harmless for the many commands that never call a
+  // watched method — the hook only fires from setConfig/delete/setControls/
+  // activate) rather than per-command, so `seq time` (which goes through
+  // setConfig under the hood) inherits coverage automatically instead of
+  // needing its own CLI-side wiring to remember.
+  const onWriteLatency = makeWatchdog({
+    host,
+    readState: readLatencyState,
+    writeState: writeLatencyState,
+    warn: (msg) => console.error(msg),
+  });
+  const pb = new Pixelblaze(host, { onWriteLatency });
+  instances.push(pb);
+  return pb;
+}
 // PBZ-PLAN.md Chunk 27: candidate .pbb files for the freshness nudge — cwd plus
 // wherever pb.config.json actually lives, deduped. Missing/unreadable dirs and
 // files that vanish mid-stat are skipped, never thrown — this is a nudge, not
@@ -355,6 +424,10 @@ try {
     } else if (sub === 'time') {
       const n = Number(pos[2]);
       if (Number.isNaN(n) || n < 1) die('usage: seq time <seconds ≥ 1>');
+      // sequenceTimer is a plain config key, so this goes through setConfig()
+      // exactly like `set-config` does — and inherits its write-latency
+      // watchdog coverage for free, since the watchdog hook lives on setConfig
+      // itself (op-labeled 'setConfig' there), not on this CLI command.
       await mkPixelblaze(host).setConfig({ sequenceTimer: n });
       console.log(`sequencer interval: ${n}s`);
     } else if (modes[sub] !== undefined) {
