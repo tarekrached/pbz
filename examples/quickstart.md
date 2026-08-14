@@ -66,7 +66,7 @@ Patterns written in the web UI exist nowhere but the device. `backup` snapshots
 every file on it — patterns, settings, playlist, pixel map — into one JSON file.
 
 ```sh
-./pbz.mjs backup                       # -> "<devicename>-<date>.pbb"
+./pbz.mjs backup                       # -> "<name>-<chipId>-<date>-<time>Z.pbb"
 ./pbz.mjs restore mydevice-2026-08-11.pbb --yes
 ```
 
