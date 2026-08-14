@@ -115,3 +115,18 @@ test('purgeBinary drops every frame of a type, including unclaimed strays', () =
   q.purgeBinary(5);
   assert.equal(q._sizes().binaries, 1);
 });
+
+// A `purgeText` (the text analogue of purgeBinary above) was tried for
+// PBZ-PLAN.md Chunk 26's stale-ack problem and REMOVED after a second
+// verification round found it didn't work and made things worse: mark()
+// already excludes anything queued before it (that's Chunk 24's own
+// guarantee, exercised by "a frame queued BEFORE the mark can never satisfy
+// a later request" above), so a purge taken right before mark() could never
+// reach a stray ack that arrives AFTER — which is exactly when the real
+// leak happens. Worse, a purge running on every call could steal a
+// genuinely live ack out from under a second, concurrent waiter on the same
+// connection (reproduced: a delivered ack sits claimable for up to
+// waitEntry's ~10ms poll window, and a second call's purge landing in that
+// window left the first call hanging to its own timeout). The actual fix —
+// closing the connection on a write timeout so a late ack dies with the old
+// socket — lives in lib/pixelblaze.mjs's `_awaitAckOrQuarantine`.

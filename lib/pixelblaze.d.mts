@@ -179,12 +179,40 @@ export interface SaveResult {
   previewBytes: number;
 }
 
+/**
+ * Constructor options for `Pixelblaze`. All optional — the class works with
+ * none of these set.
+ */
+export interface PixelblazeOptions {
+  /**
+   * Called after each small write completes — `setConfig`, `delete`,
+   * `setControls`, `activate` — with the operation name and its post-connect
+   * write->ack time in milliseconds (list()/target-resolution time, cold
+   * connection opens, and any trailing settle delay are excluded by
+   * construction; see each method's own doc comment). This is the seam
+   * PBZ-PLAN.md Chunk 26's write-latency watchdog hooks into (see
+   * `lib/latency.mjs`'s `makeWatchdog`, which is what the CLI wires here); a
+   * library caller with no interest in write latency can simply omit it.
+   * Exceptions thrown by this callback are swallowed — it can never fail the
+   * write it is reporting on.
+   */
+  onWriteLatency?: (op: string, ms: number) => void;
+}
+
+/**
+ * Concurrent WRITES on one `Pixelblaze` instance are unsupported: acks carry
+ * no request id, so two in-flight writes sharing the connection can't be
+ * told apart — a reply meant for one can satisfy the other's wait.
+ * Serialize writes against a given instance yourself if you need more than
+ * one. Concurrent READS are fine (see getInfo(), which relies on this).
+ */
 export declare class Pixelblaze {
   /**
    * @param host Address or hostname. This class takes a host and nothing else:
    *   no argv, no config files, no environment. Resolution is the caller's job.
+   * @param opts See `PixelblazeOptions`.
    */
-  constructor(host: string);
+  constructor(host: string, opts?: PixelblazeOptions);
 
   readonly host: string;
 
@@ -228,10 +256,26 @@ export declare class Pixelblaze {
   /** Saved patterns, id and name. */
   list(): Promise<PatternRow[]>;
 
-  /** Switch the active pattern. `target` may be an id or a name (case-insensitive). */
+  /**
+   * Switch the active pattern. `target` may be an id or a name
+   * (case-insensitive). Times only the post-connect write->ack span for
+   * `opts.onWriteLatency` — target resolution and connection setup are
+   * excluded. On a timeout, the connection is closed and reopened fresh on
+   * the next call (see the class doc's concurrency note for why).
+   */
   activate(target: string): Promise<PatternRow>;
 
-  /** Delete a saved pattern. Fire-and-forget; the device sends no acknowledgement. */
+  /**
+   * Delete a saved pattern. The delete itself gets no acknowledgement from
+   * the device; this ping-chases a `{"ping":true}` on the same connection
+   * and waits for ITS ack, which only arrives once the delete has been
+   * processed (FIFO ordering). Throws — naming storage pressure as the
+   * likely cause — if that ack doesn't arrive within 8s: a dead or
+   * GC-stalled device now fails loud here instead of appearing to succeed,
+   * and the connection is closed and reopened fresh on the next call (see
+   * the class doc's concurrency note for why). Times only the post-connect
+   * write->ack span for `opts.onWriteLatency`.
+   */
   delete(target: string): Promise<PatternRow>;
 
   getSources(id: string): Promise<PatternSources>;
@@ -259,7 +303,13 @@ export declare class Pixelblaze {
   /** Set exported pattern variables. Distinct from `setControls`, which drives the UI sliders. */
   setVars(obj: Record<string, unknown>): Promise<Record<string, unknown>>;
 
-  /** Tune the active pattern's UI controls. Sliders are 0..1, toggles 0/1, pickers 3-element arrays. */
+  /**
+   * Tune the active pattern's UI controls. Sliders are 0..1, toggles 0/1,
+   * pickers 3-element arrays. Waits up to 8s for the device's ack (closing
+   * and reopening the connection fresh on a timeout — see the class doc's
+   * concurrency note for why), and times only the post-connect write->ack
+   * span for `opts.onWriteLatency`.
+   */
   setControls(controls: Record<string, ControlValue>): Promise<void>;
 
   /**
@@ -277,7 +327,18 @@ export declare class Pixelblaze {
 
   getConfig(): Promise<DeviceConfig>;
 
-  /** Plain config fields persist on receipt; there is no separate save step. */
+  /**
+   * Plain config fields persist on receipt; there is no separate save step.
+   * The write itself gets no acknowledgement from the device; this
+   * ping-chases a `{"ping":true}` on the same connection and waits for ITS
+   * ack, which only arrives once the write has been processed (FIFO
+   * ordering). Throws — naming storage pressure as the likely cause — if
+   * that ack doesn't arrive within 8s: a dead or GC-stalled device now
+   * fails loud here instead of appearing to succeed, and the connection is
+   * closed and reopened fresh on the next call (see the class doc's
+   * concurrency note for why). Times only the post-connect write->ack span
+   * for `opts.onWriteLatency`.
+   */
   setConfig(obj: Partial<DeviceConfig>): Promise<Partial<DeviceConfig>>;
 
   /** 0 Off, 1 ShuffleAll, 2 Playlist. */

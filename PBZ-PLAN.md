@@ -47,7 +47,7 @@ protects — done); all are buildable before the sensor board lands (~week of 20
 - [x] **23 — signature guard + JSDoc doc blocks** (S — added 2026-08-11)
 - [x] **24 — response-correlation & fail-loud pass** (M — added 2026-08-11, from an independent review)
 - [x] **25 — storage-pressure surfacing** (S — added 2026-08-14, from the SPIFFS death-spiral post-mortem)
-- [ ] **26 — write-latency watchdog** (S–M — same origin; the signal that would have caught it weeks early)
+- [x] **26 — write-latency watchdog** (S–M — same origin; the signal that would have caught it weeks early)
 - [x] **27 — backup-freshness nudge** (S — the `.pbb` is what made the incident survivable)
 - [ ] **28 — `defrag`: OTA deep clean** (M — do after 25+26; they are its go/no-go gate)
 
@@ -953,6 +953,145 @@ load; the incident board died at 74% after months of churn.
   crossing); live check that normal operations on a healthy board stay silent.
 - **Size:** S–M.
 
+- **Implemented 2026-08-14 — the spec's premise didn't hold, and the design changed
+  before code did.** "pbz already awaits acks on writes" is true for `setControls`/
+  `activate`/`save`/`run` (Chunk 24), but **`setConfig` and `delete` are fire-and-forget**:
+  the ack machinery was never wired to them, and both just sent + `sleep(150)` blind. That
+  meant this chunk's clock had nothing to time on its own two most relevant methods. The
+  orchestrator live-verified the wire assumptions against the real device (v3.67,
+  2026-08-14) before deciding how to fix it:
+  - A bare `setConfig` alone produces **no ack within 1.5s**.
+  - A bare `deleteProgram` alone produces **no ack within 1.5s**.
+  - A bare `{"ping":true}` acks in **13–84ms**.
+  - `setConfig` then `{"ping":true}` on the same connection: the ping's ack arrives in
+    **110–189ms** — consistently later than a bare ping, and consistently arriving at all.
+  - `deleteProgram` then `{"ping":true}`: ack in **153ms**, same pattern.
+  - **Zero stray acks** observed across the runs — nothing else on the connection was
+    answering these pings.
+  The device processes messages on one connection strictly FIFO, so a ping's ack is a real
+  completion signal for whatever was queued ahead of it. **Decision: ping-chase.** Both
+  methods now `mark()`, send the write, send `{"ping":true}` right behind it on the same
+  connection, and await THAT ping's ack via the existing Chunk-24 `expectAck` helper —
+  replacing the blind `sleep(150)` with a real wait for the device to have actually finished,
+  not a guess at how long that might take.
+  - **This is strictly better completion semantics, and it makes fail-loud apply to two
+    methods that never had it.** `setConfig()`/`delete()` previously could not fail after
+    the message was sent — the sleep always "succeeded". Now an ack timeout throws, same as
+    every other write since Chunk 24. A dead or GC-stalling board makes these throw instead
+    of silently reporting success, which is exactly the failure mode Chunk 24 closed
+    everywhere else and this chunk's own motivating incident (SPIFFS death-spiral) argues
+    for closing here too.
+  - **The spec's "no active canary probe" rejection is still correct, and ping-chase doesn't
+    reopen it.** The rejected idea was a save+delete cycle that *adds* write churn purely to
+    measure it. A chased ping adds one small, ack-only message, immediately after a write the
+    user already initiated — it never fires on its own, and it's not creating the disease it
+    measures.
+  - ~~Latency timing wraps the WHOLE ping-chased call~~ — **superseded by the local-review
+    rework below.** The bracket now excludes target resolution/`list()` and the connection
+    open; it covers only the write→ack span. See the 2026-08-14 (local review) note.
+  - **`setVars`, `brightness`, and `limit` remain uncovered** — still fire-and-forget, no ack
+    on the wire at all (confirmed in the existing code, not re-verified live this round).
+    Extending the same internal ping-chase helper to them is the obvious follow-up if their
+    write latency ever becomes suspect; not done here to avoid claiming timing coverage this
+    chunk didn't actually verify for them.
+
+- **Reworked 2026-08-14 (same day, local review) — the timing seam moved into the library,
+  and three correctness gaps closed.** A local review of the first pass found the design above
+  workable but the *measurement* wrong in a way that mattered, plus a real leak the "strictly
+  better" framing missed. Applied, in order of how much they change the shape:
+  1. **The measurement bracket moved from the CLI into `lib/pixelblaze.mjs` itself, and now
+     covers only the write→ack span.** The first pass's `timedWrite()` CLI wrapper (since
+     removed) timed the WHOLE awaited call, which for `activate`/`delete` meant
+     `_resolveTarget()`'s own `list()` — a chunked BINARY read whose duration scales with
+     pattern count — got folded into a baseline meant for small, fixed-size writes. Worse,
+     because the baseline is host-keyed, a slow `list()` on an unrelated command could mask a
+     genuinely slow `set-config` on the same host. Fix: the `Pixelblaze` constructor now takes
+     an optional `opts.onWriteLatency(op, ms)` — a **constructor option, not a prototype
+     member**, so `test/types.test.mjs`'s member-set guard is untouched; it's declared instead
+     on a new `PixelblazeOptions` interface in `lib/pixelblaze.d.mts`, and exercised in
+     `test/types/consumer.ts`. `setConfig`, `delete`, `setControls`, and `activate` each start
+     their own clock right before their write is sent (after `_getConn()`/`_resolveTarget()`,
+     before `mark()`) and stop it at ack receipt, then report through this hook — never letting
+     a hook exception escape (`_reportWriteLatency` wraps the call in try/catch). The CLI no
+     longer measures anything itself: `mkPixelblaze()` builds one `onWriteLatency` per instance
+     and passes it to the constructor, so `seq time` (which calls `setConfig` under the hood)
+     inherits coverage automatically instead of needing its own CLI-side label.
+  2. **Stale-ack leakage, reproduced live: a retry right after a timeout "succeeded" in 11ms
+     against the PREVIOUS call's own late ack.** Root cause: acks carry no request id — a
+     device reply to an abandoned, timed-out write is indistinguishable on the wire from a
+     reply to whatever runs next on the same connection, so it's fair game to satisfy either
+     one's wait. This is a **protocol limitation**, not a queueing bug, and it is only closed
+     here for the timeout case specifically (see the CORRECTION below for the attempt that
+     didn't close it, and why): on an ack-wait timeout, `setConfig`/`delete`/`setControls`/
+     `activate` now **quarantine the connection** (`_awaitAckOrQuarantine` in
+     `lib/pixelblaze.mjs`: close it and drop `this._conn` to null, BEFORE rethrowing the
+     original timeout, with the `close()` itself wrapped so it can never mask that error) —
+     the device was already suspect, so a late reply now dies with the old socket, and the
+     next call reconnects fresh (same ethos as Chunk 20's fail-fast). This is NOT a general
+     fix for anonymous acks: it closes the specific "my own write just timed out" case, not
+     every conceivable ordering. Consequence, now documented on the class and in
+     `lib/pixelblaze.d.mts`: **concurrent writes on one `Pixelblaze` instance are
+     unsupported** — two in-flight writes sharing a connection can't be told apart either,
+     with no timeout involved to trigger a quarantine. Concurrent READS remain fine
+     (`getInfo()`'s own `Promise.all` depends on this). `run`/`save` have the same class of
+     stray-ack potential (noted by the reviewer) but are out of this chunk's scope
+     (payload-scaling, not small writes) and were left alone.
+     > ⚠️ **CORRECTION.** The first attempt at this fix added `lib/queue.mjs`'s `purgeText`
+     > (the text analogue of `purgeBinary`), called immediately before `mark()` in all four
+     > write paths, reasoning that a stale reply already sitting in the queue could be swept
+     > out before a fresh wait began. A second verification round found this **did not work
+     > and made things worse**: `mark()` already excludes anything queued strictly before it
+     > (that's Chunk 24's own guarantee — the exact bug purgeText's own committed tests
+     > confirmed, once read honestly: they passed with the "leak" scenario constructed so the
+     > stale message arrived BEFORE the purge, which mark() alone already handles), so a purge
+     > taken before mark() can never reach an ack that arrives AFTER it — precisely the timing
+     > of the real 11ms repro. Worse, purging unconditionally on every call could steal a
+     > **genuinely live** ack out from under a second, truly concurrent waiter on the same
+     > connection: reproduced by delivering an ack, which sits claimable for up to
+     > `waitEntry`'s ~10ms poll window, and having a second call's purge land in that window —
+     > the first call then hung to its own timeout, worse than the bug being fixed. `purgeText`
+     > was removed entirely (primitive, call sites, and its tests) and replaced with the
+     > quarantine approach above. Recorded per this project's own convention (see Chunk 16's
+     > correction) because the reasoning was plausible and wrong, not because the bug was
+     > exotic.
+  2b. **The floor/multiplier warn band has a real ceiling now, and the comments say so.** With
+     `expectAck`'s old 3s default, a baseline past ~1s would hit a hard timeout before the
+     3x-baseline warn arm ever got room to fire — a false negative disguised as "it just
+     didn't warn yet." Both the ping-chase (`expectChaseAck`) and, by judgment call (noted
+     here since the brief left it open), the other two timed writes now use a dedicated
+     `WRITE_ACK_TIMEOUT_MS = 8_000` — a point on the incident's own scale: far past a healthy
+     round trip, far short of the observed degradation (small writes taking MINUTES), and
+     deliberately NOT `protocol.mjs`'s own `IDLE_CLOSE_MS` (10s): the original 10s pick
+     exactly matched it, so the idle-close timer and the ack-wait timeout could race and fire
+     at the same instant for reasons that had nothing to do with either constant — a
+     coincidence a verification round's own tests had to route around instead of avoiding. 8s
+     sidesteps the coincidence outright and still sits comfortably inside the incident's
+     minutes-scale disease band. The ping-chase's timeout message now names the disease
+     directly: `` no ack within 8s after <what> — device writes may be stalling (storage
+     pressure?); check `pbz info`'s storage line ``. `lib/latency.mjs`'s `warnThresholdMs`
+     comment now says explicitly that the floor/multiplier scheme only ever gets to warn
+     across roughly a 2-8s band in practice — past 8s the write throws first, and that throw
+     IS the late-stage signal, not a gap in the warn scheme.
+  3. **The watchdog glue moved out of `pbz.mjs` into `lib/latency.mjs`'s `makeWatchdog`, a
+     pure factory over injected `{host, readState, writeState, warn}`.** It was previously
+     untested CLI code; now its exact behavior — reads state, scores the sample, persists
+     (catching a `writeState` failure into one `warn()` line, never letting persistence
+     failure suppress a latency warning or vice versa), and builds the warning message with
+     the PRIOR baseline — is covered by `test/latency.test.mjs` directly, without a device or
+     even a real filesystem. `pbz.mjs` now supplies only `readLatencyState`/`writeLatencyState`
+     (the fs half) and wires `makeWatchdog`'s output into the constructor. (An accepted-but-
+     unused `now` parameter from the first pass was dropped in review — `ms` already arrives
+     pre-measured, so there was nothing for a clock to do.)
+  4. **Micro fixes, applied:** `applySample` now treats a non-finite stored `baselineMs` (a
+     hand-edited `"abc"`, a `NaN` that somehow round-tripped) as no-baseline via
+     `Number.isFinite`, rather than trusting a bare nullish check — a poisoned entry used to
+     stay poisoned forever, silently un-warnable. `writeLatencyState` writes a temp file in the
+     same directory and `renameSync`s it over the target, so a concurrent reader can never
+     observe a torn write that wipes every host's baseline, not just the one being updated —
+     and now `unlinkSync`s that temp file if the rename itself fails, so a filesystem error
+     doesn't also leak a stray `latency.json.<pid>.tmp`. `test/types/negative.ts` gained a
+     `@ts-expect-error` for `onWriteLatency` being given a non-function value.
+
 ### Chunk 27 — backup-freshness nudge
 
 - Before destructive multi-file operations (`restore --prune`; extend if others appear), look
@@ -1003,7 +1142,7 @@ WebSocket at `ws://<host>:81`. `save:true` persists to flash; `save:false` is li
 | Global brightness | `{"brightness": <0..1, step .005>, "save": <bool>}` |
 | Brightness limit | `{"maxBrightness": <0..100 clamped>, "save": true}`  ← **percent**, not 0..1; key is `maxBrightness` not `brightnessLimit` |
 | Get config | `{"getConfig": true}` (UI sends it with `{"sendUpdates":false,"getConfig":true,"listPrograms":true,"getUpgradeState":true,"getPeers":1}`) |
-| Set config | `{"<key>": <val>}` — **no `save` key**, persists immediately (verified live) — keys: `name, pixelCount, ledType, dataSpeed, colorOrder, cpuSpeed, discoveryEnable, timezone, autoOffEnable, autoOffStart("HH:MM"), autoOffEnd, networkPowerSave, sequenceTimer, brandName, simpleUiMode` |
+| Set config | `{"<key>": <val>}` — **no `save` key**, persists immediately (verified live) — keys: `name, pixelCount, ledType, dataSpeed, colorOrder, cpuSpeed, discoveryEnable, timezone, autoOffEnable, autoOffStart("HH:MM"), autoOffEnd, networkPowerSave, sequenceTimer, brandName, simpleUiMode`. **Produces no ack of its own** (verified live 2026-08-14, v3.67: none within 1.5s). Chunk 26 ping-chases it: a `{"ping":true}` sent right after, same connection, acks only once this write is processed (FIFO ordering) — 110-189ms observed, vs 13-84ms for a bare ping. |
 | Get vars | `{"getVars": true}` → `{"vars": {...}}` |
 | Set vars | `{"setVars": { name: value, ... }}` |
 | Set controls | `{"setControls": {...}, "save": <bool>}` (existing) |
@@ -1016,7 +1155,7 @@ WebSocket at `ws://<host>:81`. `save:true` persists to flash; `save:false` is li
 | Set playlist | playlist object, `items:[{"id","ms"}]` |
 | Get source (for export) | `{"getSources": "<id>"}` → binary **SOURCESDATA frame, type 6** (`[type][flag]` + payload), payload chunks concatenated then run through the device's own `LZString.decompressFromUint8Array` → `JSON.parse` → `{main: "<source>", blockly?: ...}`. Reuses `lib/compiler.mjs`'s LZString extraction (`makeLZDecompress`, the inverse of `makeLZ`). |
 | Get thumbnail (for export) | `{"getPreviewImg": "<id>"}` → binary **THUMBNAILJPG frame, type 4** — `[type][flag]` + 17-byte id (ASCII) + jpeg chunk; concatenate the post-id payload across frames for the full jpeg. |
-| Delete pattern | `{"deleteProgram": "<id>"}` — fire-and-forget, no ack (matches web UI) |
+| Delete pattern | `{"deleteProgram": "<id>"}` — fire-and-forget on its own, no ack (matches web UI; verified live 2026-08-14, v3.67: none within 1.5s). Chunk 26 ping-chases it: a `{"ping":true}` sent right after, same connection, acks only once this write is processed (FIFO ordering) — 153ms observed, vs 13-84ms for a bare ping. |
 | List patterns | `{"listPrograms": true}` → chunked binary type 7 (existing) |
 | Activate | `{"activeProgramId": "<id>"}` (existing) |
 | Ping | `{"ping": true}` → `{"ack": 1}` (verified live — not the boolean `true` this table originally guessed) |

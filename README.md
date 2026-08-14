@@ -83,6 +83,7 @@ pbz info                            # firmware, FPS, memory, uptime, storage, sy
 pbz config [--check]                # LED settings; --check asserts your `expect` block
                                     #   expect.maxStoragePct fails --check if storage exceeds it
 pbz set-config colorOrder=WRGB pixelCount=170
+                                    #   small writes are latency-watched — see "Known gaps" below
 pbz ping
 pbz reboot
 pbz discover [--ms=3000]            # find Pixelblazes by LAN beacon, no address needed
@@ -274,6 +275,27 @@ Honest list, not a roadmap I'm promising to finish.
   restore wipes first; this is deliberately gentler.
 - `restore --prune` nudges on stderr (not a gate) when no local `.pbb` for
   this device is newer than 7 days.
+- **Small writes are latency-watched.** `set`, `activate`, `set-config`,
+  `delete`, and `seq time` (which goes through `set-config` under the hood)
+  each time their own post-connect write round trip against a tiny per-host
+  baseline in `~/.pbz/latency.json`, warning on stderr past 3x baseline or
+  2s, whichever is bigger — the same SPIFFS-pressure signal as `info`'s
+  storage line, just visible earlier. Concurrent `pbz` invocations racing on
+  that file are last-writer-wins by design: it's advisory telemetry, not a
+  record anything downstream depends on being exact. `setvars`,
+  `brightness`, and `limit` are not covered — the device sends no
+  acknowledgement for any of them, so there's nothing to time yet. The
+  warning names the underlying library operation, not the CLI verb it came
+  from (`set` -> `setControls`; `set-config` and `seq time` -> `setConfig`).
+- **Those same commands now wait up to 8s for an ack** (was 3s) before
+  failing loud — deliberate, so the watchdog's 3x-baseline warn arm has room
+  to fire before a hard timeout would otherwise mask it; `run`/`save`'s own
+  internal acks are unaffected and keep the 3s default. On a timeout the
+  connection is dropped and reopened fresh on the next call, since a late,
+  unattributable ack from the abandoned write could otherwise be mistaken
+  for a later call's own reply — which also means **concurrent writes on one
+  `Pixelblaze` instance are unsupported** (serialize them yourself); reads
+  are unaffected.
 - WiFi credentials are never in a `.pbb`, in either direction. That's the
   firmware's behavior, not a choice pbz makes.
 
