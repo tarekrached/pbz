@@ -2,17 +2,20 @@
   "name": "pbz",
   "version": "0.1.0",
   "type": "module",
-  "description": "Unofficial command-line tool and JS library for Pixelblaze LED controllers. Compiles patterns headless \u2014 no browser, no Python, no dependencies.",
+  "description": "Unofficial CLI and JS library for Pixelblaze LED controllers. Compiles patterns headless, so you can keep them in git and iterate from an editor instead of a browser tab. Node 22+, zero dependencies.",
   "keywords": [
     "pixelblaze",
     "led",
     "ws2812",
     "ws2814",
     "addressable-leds",
+    "rgbw",
     "electromage",
     "esp32",
     "cli",
-    "zero-dependencies"
+    "nodejs",
+    "zero-dependencies",
+    "led-art"
   ],
   "license": "MIT",
   "author": "Tarek Rached",
@@ -49,7 +52,8 @@
     "pb.config.example.json",
     "power.example.json",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
   ],
   "types": "./lib/pixelblaze.d.mts"
 }
