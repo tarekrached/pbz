@@ -353,5 +353,6 @@ Prior art worth knowing:
   console. It forwards already-compiled patterns; the library half of pbz could
   serve as a backend for something similar.
 
-MIT licensed. See [LICENSE](LICENSE), which also covers the one vendored file
-(`lib/jpeg-encoder.cjs`, Adobe BSD).
+MIT licensed. See [LICENSE](LICENSE). Third-party notices are in
+[NOTICE](NOTICE): the one vendored file (`lib/jpeg-encoder.cjs`, Adobe BSD),
+and what pbz fetches from your device at runtime rather than shipping.
