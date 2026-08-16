@@ -13,8 +13,6 @@ I built this for a 170-pixel WRGB ring on some LED strips at home, because I
 wanted to keep patterns in git and iterate from a text editor instead of a
 browser tab. It grew a lot of edges. It is not affiliated with ElectroMage.
 
-<!-- TODO(demo): drop the wall GIF here. `pbz run` on a pattern, then a `pbz set` tweak. -->
-
 ## How it works (the interesting part)
 
 **Pixelblaze compiles patterns in the browser, not on the device.** The ESP32
