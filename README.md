@@ -131,6 +131,18 @@ It holds one reused websocket per instance and closes on idle. Read methods that
 map 1:1 to a wire response return it parsed and unrenamed; composites like
 `getInfo()` build on those and only add fields that bake in a decode.
 
+Every method rejects rather than resolving if the connection dies under it, and
+that includes the writes the device never acks (`setVars`, `setBrightness`,
+`setSequencerMode`, and friends). `send()` on a closed socket discards the data
+silently instead of throwing, so those used to report success against a device
+that was already gone. A dead connection also reads differently from a slow one:
+when the device is what went away, the error names it and points at
+[Device etiquette & recovery](#device-etiquette--recovery), while a device that
+is merely slow still produces the ordinary timeout message. Detection needs
+traffic, though: a request/response method sends before it waits and so notices
+in about two seconds, but an instance parked on a read with nothing outbound
+waits out the idle close.
+
 ## Device etiquette & recovery
 
 **Read this before you script anything against a Pixelblaze.** The ESP32's
