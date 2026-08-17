@@ -1468,14 +1468,24 @@ it had just started was still rendering, unsaved and absent from `pbz list`.
   previously active pattern on reboot — reproduced three times, the boot pointer follows the most
   recently **saved** pattern, and a later `activate` of something else does not stick. Both
   messages that leaned on the intuitive behaviour were rewritten to the measured one.
-- **Acceptance:** 37 new hermetic tests, **229 total**, typecheck green. **Every message is
+- **Acceptance:** 42 new hermetic tests, **234 total**, typecheck green. **Every message is
   asserted twice — for what it claims and for what it must NOT claim** — because a state cursor
   one step ahead produces a plausible, wrong, confident message rather than a crash. Load-bearing
   proof: against the pre-fix library the new tests fail (the handful that pass assert the ABSENCE
   of a note, so they pass by construction); mutations that advance the resume cursor before its
   ack, that swap the two save-side states, that restore the shared Error instance, that collapse
   the completion-ack loop back to a single claim, and that drop the watermark from that loop are
-  each caught by exactly the test written for them. The test fake was rewritten twice for this:
+  each caught by exactly the test written for them. **A dedicated mutation sweep** (40 mutants,
+  4 provably equivalent) then put a number on it: **27/36 killed, 75%**, and its survivors were
+  worth more than the score. The most dangerous was `CHUNK_BYTES`: changing the wire constant
+  passed the entire suite, because the test fake IMPORTS the same constant to decide how many
+  acks to emit, so the tests stayed self-consistent with whatever the code said while every real
+  write to hardware would have sent frames the firmware does not expect. It is now pinned against
+  a literal 1280, the way `golden-bytes` pins compiler output. Also closed: a `left = '<state>'`
+  with no `DEVICE_LEFT` entry (a source-level drift guard, since no runtime test can reach it —
+  a state that maps to no message is the worst thing a feature about telling the truth can ship),
+  a thrown `null`/`undefined` reaching the annotator, and `failure()` handing back its factory
+  instead of an Error. The test fake was rewritten twice for this:
   it now acks per COMMAND, derives its chunk acks from the real payload, and honours the
   watermark — three fidelity gaps that each let a real defect through. A third round then found
   five surviving mutants and two **vacuous** tests: the non-Error test threw from `compile()`,

@@ -388,3 +388,24 @@ test('a complete frame set survives a socket that closes before the teardown sen
   ws.readyState = 3; // closed underneath us; the close event has not fired yet
   assert.equal((await pending).length, 2, 'frames already collected must not be lost to a best-effort teardown');
 });
+
+test('the on-wire chunk size is 1280 bytes, asserted against a literal', () => {
+  // Deliberately hardcoded, NOT imported from protocol.mjs. A mutation sweep
+  // found that changing CHUNK_BYTES passes the entire suite, because the
+  // device-state fake imports the same constant to decide how many acks to
+  // emit — so the tests stay self-consistent with whatever the code says while
+  // every real save() to hardware sends frames the firmware's parser does not
+  // expect. A wire constant has to be pinned to its wire value, the same way
+  // test/golden-bytes.test.mjs pins compiler output.
+  const { c, ws } = fakeConnect(5000);
+  return (async () => {
+    await c.opened;
+    c.sendBytecode(Buffer.alloc(1280 * 2 + 5, 9), 1);
+    assert.equal(ws.sent.length, 3, '2565 bytes must split into exactly 3 frames at 1280 bytes each');
+    assert.equal(ws.sent[0].length, 2 + 1280, 'frame = 2-byte header + 1280 payload');
+    assert.equal(ws.sent[1].length, 2 + 1280);
+    assert.equal(ws.sent[2].length, 2 + 5, 'the last frame carries the remainder');
+    assert.equal(ws.sent[0][1] & 1, 1, 'first frame carries the first-chunk flag');
+    assert.equal(ws.sent[2][1] & 4, 4, 'last frame carries the last-chunk flag');
+  })();
+});

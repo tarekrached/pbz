@@ -359,3 +359,53 @@ test('save: a file-supplied id is shell-quoted like everything else in the comma
   assert.match(e.message, /'a`reboot`'/, 'quoted, so a hostile .epe cannot execute on paste');
   assert.doesNotMatch(e.message, /activate --host='fake-host' a`/, 'never bare');
 });
+
+// --- drift guards -----------------------------------------------------------
+// A mutation sweep ranked this the worst failure this feature can produce: add
+// a fifth `left = '...'` state without a DEVICE_LEFT entry and nothing crashes
+// in development. withDeviceState sets `device.state` to the new name, the
+// message lookup throws inside the swallowed try/catch, and the error ships
+// carrying a state that maps to no truth at all — in a feature whose entire
+// purpose is telling the user the truth. A runtime test cannot reach it, so
+// this reads the source, the same way test/types.test.mjs guards the .d.mts.
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
+const libSrc = readFileSync(path.join(import.meta.dirname, '../lib/pixelblaze.mjs'), 'utf8');
+const dtsSrc = readFileSync(path.join(import.meta.dirname, '../lib/pixelblaze.d.mts'), 'utf8');
+
+test('every state the code assigns has a message, and is declared in the types', () => {
+  const assigned = new Set([...libSrc.matchAll(/left = '([a-z-]+)'/g)].map(m => m[1]));
+  assert.ok(assigned.size >= 4, `expected the four states, found ${[...assigned].join(', ')}`);
+
+  const table = libSrc.slice(libSrc.indexOf('const DEVICE_LEFT = {'), libSrc.indexOf('\n};', libSrc.indexOf('const DEVICE_LEFT = {')));
+  const declared = new Set([...table.matchAll(/^\s*'?([a-z-]+)'?:\s*\(/gm)].map(m => m[1]));
+  for (const state of assigned) {
+    assert.ok(declared.has(state), `state '${state}' is assigned but has no DEVICE_LEFT message`);
+  }
+
+  const union = new Set([...dtsSrc.matchAll(/\|\s*'([a-z-]+)'/g)].map(m => m[1]));
+  for (const state of declared) {
+    assert.ok(union.has(state), `state '${state}' has a message but is missing from DeviceLeftState`);
+  }
+});
+
+test('a thrown null survives the annotator untouched', async () => {
+  // Without the object/null guards, `e.device = …` on null throws a SECOND,
+  // unrelated TypeError from inside the annotator, destroying the original at
+  // the moment a caller most needs it. The existing sibling test covers only
+  // strings, so this was a real gap a mutation sweep found.
+  const pb = pbWith(fakeConn());
+  pb._tooling.lz = () => { throw null; }; // eslint-disable-line no-throw-literal
+  let caught = 'did not throw';
+  try { await pb.save('src', 'Sweep'); } catch (e) { caught = e; }
+  assert.equal(caught, null, 'a thrown null must reach the caller unchanged');
+});
+
+test('a thrown undefined survives the annotator untouched', async () => {
+  const pb = pbWith(fakeConn());
+  pb._tooling.lz = () => { throw undefined; }; // eslint-disable-line no-throw-literal
+  let caught = 'did not throw';
+  try { await pb.save('src', 'Sweep'); } catch (e) { caught = e; }
+  assert.equal(caught, undefined, 'a thrown undefined must reach the caller unchanged');
+});

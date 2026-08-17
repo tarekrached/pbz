@@ -212,3 +212,15 @@ test('fail() is idempotent by the ERROR a waiter receives, not by factory identi
   q2.fail(() => new Error('second'));
   await assert.rejects(q2.waitText('{"ack"', 100, q2.mark()), /first/, 'the second fail() is ignored');
 });
+
+test('failure() hands back an Error, not the factory that makes one', async () => {
+  // Only the null (healthy) branch was covered, so a `failure()` that forgot to
+  // invoke the factory would have shipped a bare function to its first real
+  // caller. Found by mutation sweep.
+  const q = makeQueues();
+  assert.equal(q.failure(), null, 'healthy: nothing to report');
+  q.fail(() => new Error('websocket: closed mid-exchange'));
+  assert.ok(q.failure() instanceof Error, 'must be an Error instance');
+  assert.match(q.failure().message, /closed mid-exchange/);
+  assert.notEqual(q.failure(), q.failure(), 'and a fresh one each time, so annotations cannot collide');
+});
