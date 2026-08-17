@@ -296,10 +296,10 @@ async function nudgeIfBackupStale(pb, host) {
     const { fresh, file, ageMs } = scanBackupFreshness(entries, cfg.chipId);
     if (fresh) return;
     if (!file) {
-      console.error(`warning: no local .pbb backup found for this device (chipId ${cfg.chipId}) — run \`pbz backup --host=${host}\` first`);
+      console.error(`warning: no local .pbb backup found for this device (chipId ${cfg.chipId}) — run \`pbz backup --host=${JSON.stringify(host)}\` first`);
     } else {
       const days = Math.round(ageMs / 86400000);
-      console.error(`warning: newest matching backup is ${days}d old (${file}) — run \`pbz backup --host=${host}\` first`);
+      console.error(`warning: newest matching backup is ${days}d old (${file}) — run \`pbz backup --host=${JSON.stringify(host)}\` first`);
     }
   } catch (e) {
     console.error(`warning: couldn't check backup freshness (${e.message}) — continuing`);

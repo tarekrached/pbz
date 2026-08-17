@@ -913,8 +913,8 @@ the fix surface before a first release:
     concurrent read can therefore make a write report a failure that did not happen — a
     `getConfig()` overlapping a save was reproduced making the save report
     `saved-maybe-inactive` for an activation that succeeded. The reads that claim neither an ack nor an
-    `{"activeProgram"` frame are safe alongside a write; see the class header for the list. The class header now says so; making them actually safe needs request
-    correlation the protocol does not offer.
+    `{"activeProgram"` frame are safe alongside a write, and the class header lists them. Making the
+    rest safe needs request correlation the protocol does not offer.
 16. **`close()` does not cancel an in-flight open.** It clears `_conn` but not `_connecting`, so
     an open that resolves after a `close()` reassigns `this._conn`, leaving a live socket nobody
     holds for up to `idleMs`. Pre-dates Chunk 30, and the CLI's `die()` iterates `instances` and
@@ -1433,13 +1433,21 @@ reads `fps 0.00` exactly as `maybe-paused` claims.
   that, and an unannotated error reads as "nothing was sent").
 - **Size:** S. Six review rounds. Rounds 1-2 found the feature's real defects; rounds 4 and 5
   each spent their headline finding on a regression the previous round's fix had introduced, and
-  round 6's one genuine new defect came from putting it on real hardware rather than from reading
-  it again. A convergence pass over every line touched more than once found `alive()` CONVERGED
+  round 6 found two more: one from putting it on real hardware, and one from measuring the
+  transport against real undici rather than reasoning about it. A convergence pass over every line touched more than once found `alive()` CONVERGED
   (both competing justifications hold) but `withDeviceState` OSCILLATING: the `device` assignment
   moved into a try, out of it, and back in over three rounds, because the guard clause and the
   catch were two spellings of one predicate and whichever ran second was unreachable. It is one
   predicate now. Two other defences were provably inert and are gone — a separate `isDead` flag
   that `death !== null` makes structural, and an `isExtensible` clause the catch already covered.
+  `alive()` genuinely was oscillating, for a reason both rounds missed: **`readyState !== OPEN` is
+  three situations.** Round 4 recorded the death immediately, which is wrong for CONNECTING (a
+  socket that may still open normally); round 5 waited for a close event, which is wrong for
+  CLOSING, where undici parks **indefinitely** if a peer sends a close frame without a FIN and no
+  event ever arrives — leaving a parked waiter to time out and resolve null, so a device that is
+  gone reads as merely slow, which the README states as a contract it must not. The fixed point is
+  neither: refuse the send, arm a short grace timer, and let a real event win if one comes. It also
+  took the protocol test file from 6.2 s to 1.45 s.
 - **Deliberately NOT in scope:** the single-step writes, whose messages already tell the whole
   story; `defrag()`, which Chunk 28 already gave this treatment; items 12-17, all found here and
   all recorded rather than folded in; and any form of automatic rollback — a tool that unpauses or

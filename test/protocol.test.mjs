@@ -372,10 +372,12 @@ test('a send refuses on a socket that closed but has not fired its event yet', a
 });
 
 test('a multi-chunk send stops the moment the socket goes, rather than discarding the rest', async () => {
-  // alive() ran once, before the loop. A socket that closed partway through
-  // delivered chunk 1 of N and the call still RETURNED — which is exactly what
-  // callers read as "every chunk is on the socket". save()'s putSourceCode is
-  // multi-chunk, so this is the largest write pbz makes.
+  // Forward-defence, and this test says so rather than implying otherwise: the
+  // loop is synchronous, so no real WebSocket can change readyState inside it,
+  // and the fake has to monkeypatch `send` to produce the transition. The check
+  // becomes load-bearing the moment anything in that loop awaits backpressure,
+  // and callers already read "sendBytecode returned" as "every chunk is on the
+  // socket" — save()'s putSourceCode is the largest write pbz makes.
   const { c, ws } = fakeConnect(5000);
   await c.opened;
   const realSend = ws.send.bind(ws);
@@ -438,4 +440,39 @@ test('a refused send does not preempt the close code that is already on its way'
   ws.onclose?.({ code: 1006 });                          // the real cause, arriving a task later
   await assert.rejects(parked, /code 1006/, 'the parked waiter must get the close code, not the refusal');
   assert.match(c.dead().message, /code 1006/, 'and so must anything asking afterwards');
+});
+
+test('a socket parked in CLOSING still dies, instead of reading as a slow device', async () => {
+  // The case two rounds got wrong from opposite sides. `readyState !== OPEN` is
+  // three situations: from CLOSED the close event has landed or is a tick away,
+  // from CONNECTING the socket may yet open, and from CLOSING undici can park
+  // INDEFINITELY when a peer sends a close frame without a FIN — measured, no
+  // event ever arrives. Recording the cause immediately gets CONNECTING wrong;
+  // waiting for an event that never comes leaves a parked waiter to run out its
+  // own timeout and resolve null, which callers report as "the device may be
+  // slow" about a device that is gone. README states that distinction as a
+  // contract. The grace timer is what makes both true.
+  const { c, ws } = fakeConnect(60_000); // idle backstop far away, so it cannot be what saves us
+  await c.opened;
+  const parked = c.waitText('{"ack"', 30_000, c.mark());
+  ws.readyState = 2; // CLOSING, and this fake will never fire onclose
+  assert.throws(() => c.json({ ping: true }), /no longer open/);
+  const t0 = Date.now();
+  await assert.rejects(parked, /went away without closing cleanly/, 'the waiter must fail, not time out');
+  assert.ok(Date.now() - t0 < 2000, `should die on the grace timer, took ${Date.now() - t0}ms`);
+  assert.ok(c.dead(), 'and the connection must be recorded dead');
+});
+
+test('a real close event still beats the grace timer and keeps its code', async () => {
+  // The grace period must never cost us the close code: an event that lands
+  // within a tick wins outright, and the deferred death is marked undetailed so
+  // a later code could upgrade it anyway.
+  const { c, ws } = fakeConnect(60_000);
+  await c.opened;
+  const parked = c.waitText('{"ack"', 30_000, c.mark());
+  ws.readyState = 3;
+  assert.throws(() => c.json({ ping: true }), /no longer open/);
+  ws.onclose?.({ code: 1006 }); // the real cause, immediately after
+  await assert.rejects(parked, /code 1006/, 'the code must win over the deferred generic death');
+  assert.match(c.dead().message, /code 1006/);
 });
