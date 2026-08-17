@@ -123,15 +123,20 @@ test('save: setControls acked but the RESUME lost stays maybe-paused', async () 
   assert.doesNotMatch(e.message, /WAS live on the device/, 'the resume was never acknowledged');
 });
 
-test('save: zero preview frames, resume acked, reports live-but-unsaved', async () => {
+test('save: zero preview frames reports the frozen wall, whatever the acks said', async () => {
+  // This used to distinguish "resume acked" from "resume lost" and report
+  // live-but-unsaved for the first. It cannot: acks carry no request id, and a
+  // straggler from the multi-chunk bytecode send is indistinguishable from the
+  // resume's own, so a fuzz run bought `running-unsaved` with an unmatched ack
+  // and zero frames drawn. With no frames there is no unambiguous evidence of
+  // rendering, and a still-paused device is the likeliest reason there are
+  // none — so the honest report is the pause, regardless of what was acked.
   const e = await failed(pbWith(fakeConn({ frames: 0 })).save('src', 'Sweep'));
-  assert.equal(e.device.state, 'running-unsaved');
+  assert.equal(e.device.state, 'maybe-paused');
   assert.match(e.message, /no preview frames/, 'the original error must survive intact');
-  assert.match(e.message, /WAS live on the device \(it was confirmed rendering\)/, 'past tense, and it must not name WHICH evidence');
-  assert.match(e.message, /absent from `pbz list --host='fake-host'`/, 'the host must travel with every command it names');
-  assert.doesNotMatch(e.message, /may be sitting frozen/, 'the resume WAS acked here');
+  assert.match(e.message, /may be sitting frozen/);
+  assert.doesNotMatch(e.message, /WAS live on the device/, 'never claim rendering without frames');
 });
-
 test('save: zero preview frames with the resume LOST reports the frozen wall instead', async () => {
   // Item 8's own case over a paused device. A still-paused device is the most
   // likely reason there were no frames, so answering the error's own "Is the
@@ -339,7 +344,7 @@ test('every state names the host in the commands it prints', async () => {
   const cases = [
     [{ suppress: ['setCode'] }, 'maybe-paused'],
     [{ suppress: ['putSourceCode'] }, 'maybe-saved'],
-    [{ frames: 0 }, 'running-unsaved'],
+    [{ throwOn: 'putSourceCode' }, 'running-unsaved'],
     [{ suppress: ['activate'] }, 'saved-maybe-inactive'],
   ];
   for (const [opts, expected] of cases) {
@@ -457,4 +462,30 @@ test('run: a transport death on the resume claim keeps the transport error', asy
   assert.match(e.message, /Device etiquette & recovery/);
   assert.doesNotMatch(e.message, /did not acknowledge both resume commands/, 'the generic message is for a TIMEOUT');
   assert.equal(e.device.state, 'maybe-paused');
+});
+
+test('save: zero frames with the device reporting fps>0 blames the stream, not the wall', async () => {
+  // Measured live: a concurrent samplePreview() sends {sendUpdates:false} and
+  // purges type-5 frames, stopping a save's collection mid-flight — so the save
+  // sees zero frames while the wall renders perfectly. Zero frames therefore
+  // has two opposite causes and the device's own fps distinguishes them.
+  const conn = fakeConn({ frames: 0 });
+  const original = conn.waitText.bind(conn);
+  conn.waitText = async (prefix, ms, after) =>
+    (prefix === '{"fps"' ? '{"fps":140.02}' : original(prefix, ms, after));
+  const e = await failed(pbWith(conn).save('src', 'Sweep'));
+  assert.equal(e.device.state, 'running-unsaved', 'fps>0 is proof it is rendering');
+  assert.match(e.message, /concurrent read/, 'and the message names the likely cause');
+  assert.doesNotMatch(e.message, /may be sitting frozen/, 'the wall is demonstrably not frozen');
+});
+
+test('save: zero frames with the device reporting fps 0 blames the wall', async () => {
+  const conn = fakeConn({ frames: 0 });
+  const original = conn.waitText.bind(conn);
+  conn.waitText = async (prefix, ms, after) =>
+    (prefix === '{"fps"' ? '{"fps":0}' : original(prefix, ms, after));
+  const e = await failed(pbWith(conn).save('src', 'Sweep'));
+  assert.equal(e.device.state, 'maybe-paused');
+  assert.match(e.message, /may be sitting frozen/);
+  assert.doesNotMatch(e.message, /concurrent read/);
 });

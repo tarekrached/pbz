@@ -906,7 +906,13 @@ the fix surface before a first release:
     "chunk 1", and leave the loop one short of the completion marker — reporting `maybe-saved`
     for a write that completed. Under-claim only, so the direction is safe. The honest fix is to
     bound that loop by a deadline rather than a chunk count.
-15. **"Concurrent READS are fine" is broader than the truth.** `getConfig()` and `getState()`
+15. **"Concurrent READS are fine" is broader than the truth — CONFIRMED on hardware.**
+    A concurrent `samplePreview()` was reproduced live stopping a `save()`'s preview collection
+    mid-flight: its teardown sends `{sendUpdates:false}` and purges type-5 frames, so the save saw
+    zero frames while the wall rendered perfectly. Chunk 30 now disambiguates that from a genuinely
+    frozen wall by consulting the device's own fps, and names the likely cause — but the underlying
+    contention is unfixed, and `ping()`/`getConfig()` contention was NOT reproduced blind in 34
+    attempts (the vulnerable window is ~20ms wide), so the remaining risk there is unquantified. `getConfig()` and `getState()`
     each claim an `{"activeProgram"` frame, which is what `save()`/`activate()` are also waiting
     for; `ping()` claims an `{"ack"`, which `save()`'s chunk accounting needs; and
     `samplePreview()` purges type-5 frames and stops the preview stream mid-collection. A
@@ -1423,7 +1429,16 @@ Frames really do prove rendering: a rendering device returned 10 at once, a paus
 in 4s. Both printed recoveries work (`activate` → 140.16 fps, re-running → 76.69), and `pbz info`
 reads `fps 0.00` exactly as `maybe-paused` claims.
 
-- **Acceptance:** 43 new hermetic tests, **237 total**, typecheck green. Every message is asserted
+- **Evidence, not acks.** Acks carry no request id, and the multi-chunk bytecode send is acked
+  frame-by-frame, so a straggler landing after the resume mark is indistinguishable from the
+  resume's own. A property fuzz over the whole failure space (2000 seeded runs, validated by
+  catching 10 planted mutants first) used exactly that to buy `running-unsaved` outright — the
+  zero-frame error answering its own "Is the pattern rendering?" with "it was confirmed rendering"
+  over a frozen wall, which is item 8's original bug through a different door. `run()` was worse:
+  it RETURNED SUCCESS. Neither method reads an ack it cannot identify as evidence any more. `save()`
+  waits for the preview frames; `run()`, which has none, asks the device for its own status frame,
+  where `fps` is unambiguous in a way an ack is not.
+- **Acceptance:** 48 new hermetic tests, **242 total**, typecheck green. Every message is asserted
   twice — for what it claims and for what it must NOT claim — because a state cursor one step ahead
   produces a plausible, confident, WRONG message rather than a crash. A 40-mutant sweep scored the
   suite at 27/36 (75%) and its survivors were worth more than the number: `CHUNK_BYTES` could be
