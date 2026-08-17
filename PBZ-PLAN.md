@@ -831,10 +831,14 @@ On a tool that writes to hardware and produces files called "backups", the failu
 
 **Known, recorded, NOT fixed** — deliberately deferred as post-publish work rather than widening
 the fix surface before a first release:
-1. **Post-open ws errors are swallowed.** `onerror` only rejects the already-settled `opened`
-   promise, and waiters get no close notification, so a mid-exchange drop spins out full timeouts
-   and then `c.json()` throws a raw `InvalidStateError`. `save()` can push bytecode and fail
-   before activation with no coherent error.
+1. ~~**Post-open ws errors are swallowed.**~~ — **DONE 2026-08-16, Chunk 29.** `onerror` only
+   rejected the already-settled `opened` promise, and waiters got no close notification, so a
+   mid-exchange drop spun out full timeouts and then `c.json()` threw a raw `InvalidStateError`.
+   A post-open error or close now calls `die()`, which records the cause and fails the queue, so
+   parked waiters reject immediately with the real reason and sends throw it rather than
+   `InvalidStateError`. A slow device still resolves null, so death and slowness stay
+   distinguishable. The half of the original entry that is NOT fixed is item 8's: `save()` still
+   doesn't say it left a pattern loaded but unsaved.
 2. **`import()` trusts the `.epe`.** A foreign-length `id` corrupts the fixed 17-byte
    putSourceCode header; a missing `name` crashes inside `stableId(undefined)`.
 3. **`pbz set` has no validation on the non-picker branch** — `pbz set sliderSpeed` sends
@@ -1229,6 +1233,43 @@ the serial-erase recovery, minus the web-app region, minus the bench.
   everything, so "touching" overclaimed); the CLI's kept-count line reads
   "kept N non-pattern file(s)" (the prior wording undersold what's
   protected — the `.gz` web-app blobs aren't even in the backup to count).
+
+### Chunk 29 — connection death is an event, not a timeout
+
+Post-publish item 1, and the last of Chunk 24's fail-loud family: that pass made *timeouts*
+honest, and this one makes *drops* honest. `ws.onerror` was wired inside the `opened` promise,
+so it could only ever reject the open. Once open, `opened` is settled and rejecting it again is
+a no-op, so every post-open error went on the floor. Nothing told the queue either, so a parked
+waiter sat out its full timeout and then reported a timeout, and the next send threw a bare
+`InvalidStateError` from the ws implementation. The device got blamed for ignoring a command
+that nothing was listening to.
+
+- **One `onerror`, two eras.** Before open it rejects `opened` as before. After open it calls a
+  new `die()`, which records the cause once, disarms the idle timer, and hands the error to the
+  queue. `ws.onclose` routes there too, so a device that simply hangs up is caught even though
+  it never fires an error.
+- **`queue.fail(err)` rejects every parked waiter now, and every later one on arrival.**
+  Waiters reject rather than resolving null, so callers get the transport's real reason instead
+  of `expectText`'s generic "timed out … the command may not have taken effect". A slow device
+  still resolves null: **death and slowness stay distinguishable**, which is the property the
+  tests pin. Frames that arrived before the drop are deliberately kept — `peekBinary`/
+  `purgeBinary` never block and their data is still real.
+- **First cause wins.** A close event always follows an error event, and the close is always the
+  vaguer of the two, so `die()` and `fail()` are both idempotent in favour of the first.
+- **Sends check first.** `json`/`sendBytecode` throw the recorded cause instead of letting
+  `InvalidStateError` out. `collectFrames` checks inside its poll loop, so `save()` no longer
+  spends its full 6s preview window waiting for frames a dead socket cannot deliver.
+- **Our own closes are labelled.** `close()` reports "closed by pbz" and the idle backstop
+  reports "no request used it for Nms", so neither reads like a device fault. A real hangup
+  names the device, the close code, and points at the README's recovery section.
+- **Acceptance:** 12 new hermetic tests (6 in `queue.test.mjs`, 6 in `protocol.test.mjs`),
+  185 total, typecheck green. Two of them assert *timing* — a drop must fail the wait in well
+  under the wait's own window — because "fails eventually" was never the bug.
+- **Size:** S. No API change; `_getConn`'s `readyState` check already reconnects, so a death
+  mid-method costs the caller one reconnect on the next call.
+- **Deliberately NOT in scope:** `save()` still doesn't tell you it left a pattern loaded on the
+  device but unsaved. That is post-publish item 8, whose complaint is exactly that, and it is
+  cheap on top of this now that the errors reaching it are coherent.
 
 ---
 

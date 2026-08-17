@@ -139,3 +139,75 @@ test('a failed open closes the socket and disarms the idle timer, instead of lea
   await sleep(90);
   assert.equal(ws.closed, false, 'the idle timer must have been cleared, not just outrun');
 });
+
+// --- Chunk 29: transport death ---------------------------------------------
+// A post-open error was dropped on the floor: `ws.onerror` only ever rejected
+// the `opened` promise, which is already settled by the time the connection is
+// in use, so rejecting it again is a no-op. Nothing told a parked waiter the
+// socket was gone, so it ran out its full timeout and reported a timeout, and
+// the next send threw a bare InvalidStateError naming neither the device nor
+// the connection. save() is the case that hurt: it can push bytecode, unpause
+// the pattern, and then lose the socket before the activate.
+
+test('a post-open error reaches a parked waiter instead of being swallowed', async () => {
+  const { c, ws } = fakeConnect(5000);
+  await c.opened;
+  const m = c.mark();
+  const waiting = c.waitText('{"ack"', 3000, m);
+  ws.onerror?.({ message: 'ECONNRESET' });
+  await assert.rejects(waiting, /ECONNRESET/, 'the error that killed the socket must reach the caller');
+});
+
+test('a device that hangs up mid-exchange fails the wait fast, and says so', async () => {
+  const { c, ws } = fakeConnect(5000);
+  await c.opened;
+  const m = c.mark();
+  const t0 = Date.now();
+  const waiting = c.waitText('{"ack"', 3000, m);
+  ws.onclose?.({ code: 1006 }); // remote hangup: not our close(), so `closed` stays false
+  await assert.rejects(waiting, /closed the connection mid-exchange \(code 1006\)/);
+  assert.ok(Date.now() - t0 < 500, 'must fail on the close, not run out the 3s wait');
+});
+
+test('sending on a dead connection throws the reason it died of', async () => {
+  // The old failure was `InvalidStateError` straight out of the ws
+  // implementation — true, and useless.
+  const { c, ws } = fakeConnect(5000);
+  await c.opened;
+  ws.onclose?.({ code: 1006 });
+  assert.throws(() => c.json({ ping: true }), /closed the connection mid-exchange/);
+  assert.throws(() => c.sendBytecode(Buffer.from([1, 2, 3])), /closed the connection mid-exchange/);
+});
+
+test('the first cause wins: the close event cannot overwrite the error behind it', async () => {
+  const { c, ws } = fakeConnect(5000);
+  await c.opened;
+  ws.onerror?.({ message: 'ECONNRESET' });
+  ws.onclose?.({ code: 1006 }); // always follows, and is always the vaguer of the two
+  assert.throws(() => c.json({ ping: true }), /ECONNRESET/);
+});
+
+test('our own two closes name themselves, so they read differently from a hangup', async () => {
+  const a = fakeConnect(5000);
+  await a.c.opened;
+  a.c.close();
+  assert.throws(() => a.c.json({ ping: true }), /closed by pbz/);
+
+  const b = fakeConnect(40);
+  await b.c.opened;
+  await sleep(90); // let the idle backstop fire
+  assert.throws(() => b.c.json({ ping: true }), /no request used it for 40ms/);
+});
+
+test('collectFrames abandons a dead socket instead of polling out its window', async () => {
+  // save() spends up to 6s here collecting preview frames. On a dropped
+  // connection every one of those seconds is spent waiting for frames that
+  // cannot arrive.
+  const { c, ws } = fakeConnect(5000);
+  await c.opened;
+  const t0 = Date.now();
+  const frames = c.collectFrames(2, 4000);
+  ws.onclose?.({ code: 1006 });
+  await assert.rejects(frames, /closed the connection mid-exchange/);
+  assert.ok(Date.now() - t0 < 1000, 'must not poll the full 4s window against a dead socket');
+});
