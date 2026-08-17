@@ -130,3 +130,62 @@ test('purgeBinary drops every frame of a type, including unclaimed strays', () =
 // window left the first call hanging to its own timeout). The actual fix —
 // closing the connection on a write timeout so a late ack dies with the old
 // socket — lives in lib/pixelblaze.mjs's `_awaitAckOrQuarantine`.
+
+// --- Chunk 29: transport death ---------------------------------------------
+// The queue's own half of "post-open ws errors are swallowed". A dropped
+// connection used to be indistinguishable from a slow device: every parked
+// waiter ran out its own full timeout and then reported a timeout, so the
+// caller blamed the device for ignoring a command nothing was listening to.
+
+test('fail() rejects a parked waiter immediately, rather than letting it time out', async () => {
+  const q = makeQueues();
+  const t0 = Date.now();
+  const waiting = q.waitText('{"ack"', 3000, q.mark());
+  q.fail(new Error('websocket: closed mid-exchange'));
+  await assert.rejects(waiting, /closed mid-exchange/);
+  assert.ok(Date.now() - t0 < 500, 'must reject on the failure, not run out the 3s wait');
+});
+
+test('fail() rejects waiters that arrive after the failure, too', async () => {
+  const q = makeQueues();
+  q.fail(new Error('websocket: closed mid-exchange'));
+  await assert.rejects(q.waitText('{"ack"', 3000, q.mark()), /closed mid-exchange/);
+  await assert.rejects(q.waitBinary(3000, 5, q.mark()), /closed mid-exchange/);
+});
+
+test('fail() is idempotent and the FIRST cause wins', async () => {
+  // A close event always follows an error event. The error is the specific one
+  // ("ECONNRESET"), the close is the generic one, and the generic must not
+  // overwrite it on the way past.
+  const q = makeQueues();
+  q.fail(new Error('ECONNRESET'));
+  q.fail(new Error('generic close'));
+  await assert.rejects(q.waitText('{"ack"', 100, q.mark()), /ECONNRESET/);
+});
+
+test('fail() does not discard frames that already arrived', async () => {
+  // Messages received before the drop are still real answers. Only the WAITING
+  // is hopeless, and peek/purge callers never wait.
+  const q = makeQueues();
+  const m = q.mark();
+  q.pushBinary(chunk(5, 1, [9, 9, 9]));
+  q.fail(new Error('websocket: closed mid-exchange'));
+  assert.equal(q.peekBinary(5, m).length, 1, 'a frame that arrived before the drop is still a frame');
+});
+
+test('collectChunks reports the transport failure, not its own "stopped sending"', async () => {
+  // A half-read transfer on a dead socket is not the device stalling
+  // mid-transfer, and saying so sends the reader after the wrong problem.
+  const q = makeQueues();
+  const m = q.mark();
+  q.pushBinary(chunk(7, 1, [1, 2]));           // first chunk, no last flag
+  const reading = q.collectChunks(7, { ms: 3000, after: m });
+  q.fail(new Error('websocket: closed mid-exchange'));
+  await assert.rejects(reading, /closed mid-exchange/);
+});
+
+test('a slow device still resolves null: death and slowness stay distinguishable', async () => {
+  const q = makeQueues();
+  assert.equal(await q.waitText('{"ack"', 30, q.mark()), null);
+  assert.equal(q.failure(), null, 'a timeout must not mark the transport dead');
+});

@@ -831,10 +831,17 @@ On a tool that writes to hardware and produces files called "backups", the failu
 
 **Known, recorded, NOT fixed** — deliberately deferred as post-publish work rather than widening
 the fix surface before a first release:
-1. **Post-open ws errors are swallowed.** `onerror` only rejects the already-settled `opened`
-   promise, and waiters get no close notification, so a mid-exchange drop spins out full timeouts
-   and then `c.json()` throws a raw `InvalidStateError`. `save()` can push bytecode and fail
-   before activation with no coherent error.
+1. ~~**Post-open ws errors are swallowed.**~~ — **DONE 2026-08-16, Chunk 29.** `onerror` only
+   rejected the already-settled `opened` promise, and waiters got no close notification, so a
+   mid-exchange drop spun out full timeouts. **This entry's own claim that `c.json()` then threw
+   a raw `InvalidStateError` was wrong** — measured on Node 26.5.0, `send()` on a `CLOSING`/
+   `CLOSED` socket throws nothing and discards the data, so the fire-and-forget writes silently
+   reported success instead. A post-open error or close now calls `die()`, which records the
+   cause and fails the queue, so parked waiters reject immediately with the real reason and sends
+   throw rather than vanishing. A slow device still resolves null, so death and slowness stay
+   distinguishable, and a waiter takes one last look before giving up so an answer that already
+   arrived is never discarded. The half of the original entry that is NOT fixed is item 8's:
+   `save()` still doesn't say it left a pattern loaded but unsaved.
 2. **`import()` trusts the `.epe`.** A foreign-length `id` corrupts the fixed 17-byte
    putSourceCode header; a missing `name` crashes inside `stableId(undefined)`.
 3. **`pbz set` has no validation on the non-picker branch** — `pbz set sliderSpeed` sends
@@ -1229,6 +1236,93 @@ the serial-erase recovery, minus the web-app region, minus the bench.
   everything, so "touching" overclaimed); the CLI's kept-count line reads
   "kept N non-pattern file(s)" (the prior wording undersold what's
   protected — the `.gz` web-app blobs aren't even in the backup to count).
+
+### Chunk 29 — connection death is an event, not a timeout
+
+Post-publish item 1, and the last of Chunk 24's fail-loud family: that pass made *timeouts*
+honest, and this one makes *drops* honest. `ws.onerror` was wired inside the `opened` promise,
+so it could only ever reject the open. Once open, `opened` is settled and rejecting it again is
+a no-op, so every post-open error went on the floor. Nothing told the queue either, so a parked
+waiter sat out its full timeout and then reported a timeout. The device got blamed for ignoring
+a command that nothing was listening to.
+
+**Correction to item 1's own wording, measured on Node 26.5.0 while building this:** the old
+entry said the next send "throws a raw `InvalidStateError`". It does not. `send()` on a WHATWG
+`WebSocket` in `CLOSING` **or** `CLOSED` throws nothing and discards the data — only `CONNECTING`
+throws. So the real prior behaviour was **worse** than recorded: every fire-and-forget write
+(`setVars`, `setBrightness`, `setMaxBrightness`, `setSequencerMode`, `setSequencerState`,
+`nextPattern`, `setPlaylist`) *silently reported success* against a dead socket. Those methods
+can now throw where they previously could not; their JSDoc says so.
+
+- **One `onerror`, two eras.** Before open it rejects `opened` as before. After open it calls a
+  new `die()`, which records the cause once, disarms the idle timer, and hands the error to the
+  queue. `ws.onclose` routes there too, so a device that simply hangs up is caught even though
+  it never fires an error.
+- **`queue.fail(err)` rejects every parked waiter now, and every later one on arrival.**
+  Waiters reject rather than resolving null, so callers get the transport's real reason instead
+  of `expectText`'s generic "timed out … the command may not have taken effect". A slow device
+  still resolves null: **death and slowness stay distinguishable**, which is the property the
+  tests pin. Frames that arrived before the drop are deliberately kept — `peekBinary`/
+  `purgeBinary` never block and their data is still real.
+- **First cause wins, so both messages stand alone.** A close event always follows an error
+  event, so `die()` and `fail()` are idempotent in favour of the first. The first cut assumed the
+  error was always the more specific of the two; it is the opposite. undici's `ErrorEvent` has an
+  **empty `.message`** and carries the real cause on `.error`, so reading `.message` degraded
+  every real death to the literal string "connection error" — which then beat the close event's
+  richer text. Both paths now name the device and point at the recovery playbook, and the error
+  path reads `.error` first.
+- **A dying waiter takes one last look.** The most serious defect the review of the first cut
+  found: `fail()` aborted parked waiters without a final poll. Waiters run on a 10ms interval and
+  the ws stack dispatches buffered message events and the close event in the *same batch*, so
+  "device answers, then hangs up" reliably left the answer sitting unclaimed. That turned a write
+  the device genuinely completed into a reported failure — Chunk 24's own failure class, reached
+  from the other direction. `abort` now ticks once before rejecting, and the same applies to
+  `collectFrames` (peek before checking liveness) and to a wait that starts already-dead.
+- **Our own closes are recorded at the moment we initiate them**, not when the close event
+  comes back. A real `ws.close()` returns with `readyState` `CLOSING` and dispatches `close` a
+  turn later, and a send in that window silently no-ops — reporting success for a write that went
+  nowhere, which is the whole disease. Stashing a cause for the later event also mislabelled a
+  device hangup that raced our idle timer as our own timeout, losing the close code.
+- **Sends check first.** `json`/`sendBytecode` throw the recorded cause instead of letting
+  `InvalidStateError` out. `collectFrames` checks inside its poll loop, so `save()` no longer
+  spends its full 6s preview window waiting for frames a dead socket cannot deliver.
+- **Our own closes are labelled.** `close()` reports "closed by pbz" and the idle backstop
+  reports "no request used it for Nms", so neither reads like a device fault. A real hangup
+  names the device, the close code, and points at the README's recovery section.
+- **The idle backstop no longer kills a slow chunked read.** `collectChunks` was wrapped in
+  `using()`, which re-arms once at call time, so a transfer healthy chunk-to-chunk but slower
+  overall than `IDLE_CLOSE_MS` tripped our own backstop — which then reported "no request used
+  it" about a connection a request was actively using. It now re-arms per **claimed** chunk,
+  which is the honest usage signal (re-arming on every inbound message is the version that
+  failed before: the ~1/s unsolicited status frames made the backstop dead code).
+- **Acceptance:** 19 new hermetic tests (6 in `queue.test.mjs`, 13 in `protocol.test.mjs`),
+  192 total, typecheck green. Several assert *timing* — a drop must fail the wait in well
+  under the wait's own window — because "fails eventually" was never the bug. Verified
+  load-bearing by reverting the library and re-running: all of the first 12 fail against the old
+  code, and four targeted mutations of the new code are each caught.
+- **Live-verified 2026-08-16 on the spare (192.168.1.187), and it corrected the story.** Killing
+  the board with `POST /reboot` under a parked 12s wait rejected it at **10014ms** — which is
+  `IDLE_CLOSE_MS`, not the device. A rebooting ESP32 sends no FIN, so a socket that is only
+  *listening* learns nothing; our own idle backstop was what forced the issue. Re-run with a
+  send after the reboot: the stale send itself returns no error (the OS hasn't noticed at
+  +1ms), the RST comes back, and the parked wait rejects at **~2s** with
+  `websocket: connection to 192.168.1.187:81 failed mid-exchange (no detail reported by the
+  socket) — it may have rebooted, dropped off wifi, or wedged its ws server (see "Device
+  etiquette & recovery")`. Note the parenthetical: on this real death undici's `ErrorEvent`
+  carried **nothing** usable, neither `.message` nor `.error.message`, which is exactly why the
+  message has to name the device and the playbook on its own rather than leaning on the event.
+  So the honest characterisation
+  is **detection needs traffic**: every request/response method sends before it waits, so those
+  see ~2s; a pure listener (`getStatus()` marks and waits without sending) waits out the idle
+  backstop. Both are improvements on the old full-timeout-then-`InvalidStateError`, but only the
+  first is fast, and the chunk should not be read as claiming otherwise. Note also that the
+  idle backstop's own label never surfaced in run 1: `onerror` fires before `onclose` on a dead
+  peer, and first-cause-wins correctly prefers "the peer is gone" over "we idled out".
+- **Size:** S. No API change; `_getConn`'s `readyState` check already reconnects, so a death
+  mid-method costs the caller one reconnect on the next call.
+- **Deliberately NOT in scope:** `save()` still doesn't tell you it left a pattern loaded on the
+  device but unsaved. That is post-publish item 8, whose complaint is exactly that, and it is
+  cheap on top of this now that the errors reaching it are coherent.
 
 ---
 
