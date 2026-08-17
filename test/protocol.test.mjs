@@ -355,7 +355,36 @@ test('a send refuses on a socket that closed but has not fired its event yet', a
   const { c, ws } = fakeConnect(5000);
   await c.opened;
   ws.readyState = 3; // closed underneath us, no event yet
-  assert.throws(() => c.json({ ping: true }), /no longer open \(readyState 3\)/);
+  assert.throws(() => c.json({ ping: true }), /no longer open/);
   assert.throws(() => c.sendBytecode(Buffer.from([1, 2, 3])), /no longer open/);
   assert.equal(ws.sent.length, 0, 'and nothing was handed to a socket that would have dropped it');
+});
+
+test('a multi-chunk send stops the moment the socket goes, rather than discarding the rest', async () => {
+  // alive() ran once, before the loop. A socket that closed partway through
+  // delivered chunk 1 of N and the call still RETURNED — which is exactly what
+  // callers read as "every chunk is on the socket". save()'s putSourceCode is
+  // multi-chunk, so this is the largest write pbz makes.
+  const { c, ws } = fakeConnect(5000);
+  await c.opened;
+  const realSend = ws.send.bind(ws);
+  ws.send = (d) => { realSend(d); if (ws.sent.length === 2) ws.readyState = 3; }; // dies after chunk 2
+  const blob = Buffer.alloc(1280 * 5, 7); // 5 chunks
+  assert.throws(() => c.sendBytecode(blob, 1), /no longer open/);
+  assert.equal(ws.sent.length, 2, 'it must not keep feeding a socket that is dropping the data');
+});
+
+test('a complete frame set survives a socket that closes before the teardown send', async () => {
+  // The teardown (`{sendUpdates:false}`) runs AFTER the frames are in hand, and
+  // once alive() started refusing on a closed-but-unannounced socket, a guard
+  // on `isDead` alone let that teardown throw the whole set away. It reached
+  // samplePreview() — a pure read behind `pbz power` — and it made save()
+  // report a frozen wall on a device that had just delivered every frame.
+  const { c, ws } = fakeConnect(5000);
+  await c.opened;
+  const pending = c.collectFrames(2, 4000);
+  ws.deliver(new Uint8Array([5, 1, 2, 3]).buffer);
+  ws.deliver(new Uint8Array([5, 4, 5, 6]).buffer);
+  ws.readyState = 3; // closed underneath us; the close event has not fired yet
+  assert.equal((await pending).length, 2, 'frames already collected must not be lost to a best-effort teardown');
 });

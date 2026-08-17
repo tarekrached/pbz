@@ -911,7 +911,11 @@ the fix surface before a first release:
     `saved-maybe-inactive` for an activation that succeeded. Only `getStatus()` and `list()` are
     genuinely disjoint. The class header now says so; making them actually safe needs request
     correlation the protocol does not offer.
-16. **`putSourceCode` gets the shortest ack budget for the largest write pbz makes.** Chunk 26
+16. **`close()` does not cancel an in-flight open.** It clears `_conn` but not `_connecting`, so
+    an open that resolves after a `close()` reassigns `this._conn`, leaving a live socket nobody
+    holds for up to `idleMs`. Pre-dates Chunk 30, and the CLI's `die()` iterates `instances` and
+    would miss it.
+17. **`putSourceCode` gets the shortest ack budget for the largest write pbz makes.** Chunk 26
     moved the small writes to 8 s; `save()`'s internal acks kept the 3 s default, and the README
     documents that deliberately. On a GC-grinding board this is where `save` fails first. Same
     origin as 12, same reason for keeping it separate.
@@ -1434,12 +1438,25 @@ it had just started was still rendering, unsaved and absent from `pbz list`.
   tense now. Second, every failure printed as one 350-580 character run-on, because the progress
   line is written without a newline and the error glued onto it, burying "error:" mid-line across
   several wrapped rows; the CLI now closes an open progress line first.
+- **A fourth round found that the third round's own fix broke a healthy path**, which is the
+  pattern this chunk kept repeating. Making `alive()` refuse on a closed-but-unannounced socket
+  was right, but `collectFrames`' teardown send was guarded only on `isDead`, so it began throwing
+  AFTER a complete frame set was already in hand — destroying the "a complete set survives the
+  drop" property Chunk 29 built, breaking `samplePreview()` (and so `pbz power`) as a pure read,
+  and making `save()` report a frozen wall on a device that had just delivered every frame asked
+  of it. The teardown is best-effort by its own comment and is now written that way.
 - **Every recovery command carries `--host` and targets the id.** Without the host, advice
   printed during a `pbz save --host=<spare>` failure would run against whatever the config
   resolves to — changing the actual wall, which is the precise class of unrequested device change
   this chunk exists to prevent. `defrag` already had the right pattern. The id rather than the
-  name because `_resolveTarget` takes the first name match, and because a pattern named `--yes`
-  would be swallowed by argv as a flag, which shell quoting cannot fix.
+  name because `_resolveTarget` takes the first name match — not hypothetical: the spare has two
+  patterns both named "Newfire", and activating by name silently takes the first. **Both the host
+  and the id are shell-quoted**, because `import()` passes the `.epe`'s OWN id through as
+  `opts.id`, so a hostile file could otherwise have put a backtick into a command a user pastes.
+  Verified end to end on the spare: a real `saved-maybe-inactive` failure was induced, the printed
+  command copied out of the error verbatim, and it worked — as did both halves of `maybe-paused`'s
+  advice (re-run → 60.76 fps, activate → 140.00 fps), with `pbz info` reading `fps 0.00` exactly
+  as that message claims.
 - **Live-verified on the spare (192.168.1.187), 2026-08-16, twice — and hardware overturned two
   messages.** Confirmed: `{"pause":true}` survives the client disconnecting (`fps` reads **0.00**
   five seconds after close), so the frozen-wall hazard is real and `fps 0` is a true diagnostic;
@@ -1451,7 +1468,7 @@ it had just started was still rendering, unsaved and absent from `pbz list`.
   previously active pattern on reboot — reproduced three times, the boot pointer follows the most
   recently **saved** pattern, and a later `activate` of something else does not stick. Both
   messages that leaned on the intuitive behaviour were rewritten to the measured one.
-- **Acceptance:** 32 new hermetic tests, **224 total**, typecheck green. **Every message is
+- **Acceptance:** 37 new hermetic tests, **229 total**, typecheck green. **Every message is
   asserted twice — for what it claims and for what it must NOT claim** — because a state cursor
   one step ahead produces a plausible, wrong, confident message rather than a crash. Load-bearing
   proof: against the pre-fix library the new tests fail (the handful that pass assert the ABSENCE

@@ -129,7 +129,7 @@ test('save: zero preview frames, resume acked, reports live-but-unsaved', async 
   assert.equal(e.device.state, 'running-unsaved');
   assert.match(e.message, /no preview frames/, 'the original error must survive intact');
   assert.match(e.message, /WAS live on the device \(it was confirmed rendering\)/, 'past tense, and it must not name WHICH evidence');
-  assert.match(e.message, /absent from `pbz list --host=fake-host`/, 'the host must travel with every command it names');
+  assert.match(e.message, /absent from `pbz list --host='fake-host'`/, 'the host must travel with every command it names');
   assert.doesNotMatch(e.message, /may be sitting frozen/, 'the resume WAS acked here');
 });
 
@@ -199,7 +199,7 @@ test('save: a withheld activate reports it IS saved, with the true reboot behavi
   // SAVED pattern, so the intuitive "reverts to the previous one" is backwards.
   assert.match(e.message, /boots whichever pattern was saved most recently/);
   assert.doesNotMatch(e.message, /revert to the previously active/, 'that claim is false on this firmware');
-  assert.match(e.message, /`pbz activate --host=fake-host [A-Za-z0-9]+` settles it/, 'the command must carry the host and target the id');
+  assert.match(e.message, /`pbz activate --host='fake-host' '[A-Za-z0-9]+'` settles it/, 'the command must carry the host and target the id');
   assert.doesNotMatch(e.message, /`pbz activate 'Sweep'`/, 'the bare name would hit the configured default device');
 });
 
@@ -323,4 +323,39 @@ test('an error that already carries a device state is not annotated twice', asyn
   const e = await failed(pb.save('src', 'Sweep'));
   assert.equal(e.device.state, 'maybe-paused', 'the first state must survive');
   assert.doesNotMatch(e.message, /WAS live/, 'and no second note may be appended');
+});
+
+test('every state names the host in the commands it prints', async () => {
+  // Round three's headline finding was advice that could run against the wrong
+  // device. Two of the four states had no test pinning the host, which is how a
+  // regression there would have gone unnoticed — including `maybe-paused`, the
+  // only state run() can produce and where most save failures land.
+  const cases = [
+    [{ suppress: ['setCode'] }, 'maybe-paused'],
+    [{ suppress: ['putSourceCode'] }, 'maybe-saved'],
+    [{ frames: 0 }, 'running-unsaved'],
+    [{ suppress: ['activate'] }, 'saved-maybe-inactive'],
+  ];
+  for (const [opts, expected] of cases) {
+    const e = await failed(pbWith(fakeConn(opts)).save('src', 'Sweep'));
+    assert.equal(e.device.state, expected);
+    assert.match(e.message, /--host='fake-host'/, `${expected} must name the device it is talking about`);
+  }
+});
+
+test('save: the reported id is the one actually written, not one re-derived from the name', async () => {
+  // `import()` passes the .epe's own id through as opts.id, so id and
+  // stableId(name) genuinely diverge there — and every other test saves without
+  // opts.id, where they coincide and a re-derivation bug would be invisible.
+  const e = await failed(pbWith(fakeConn({ suppress: ['activate'] })).save('src', 'Sweep', { id: 'ZZZfromTheEpe' }));
+  assert.equal(e.device.id, 'ZZZfromTheEpe');
+  assert.notEqual(e.device.id, stableId('Sweep'));
+  assert.match(e.message, /'ZZZfromTheEpe'/, 'and the recovery command targets that id');
+});
+
+test('save: a file-supplied id is shell-quoted like everything else in the command', async () => {
+  // opts.id comes from a .epe FILE, so it is not necessarily stableId() output.
+  const e = await failed(pbWith(fakeConn({ suppress: ['activate'] })).save('src', 'Sweep', { id: 'a`reboot`' }));
+  assert.match(e.message, /'a`reboot`'/, 'quoted, so a hostile .epe cannot execute on paste');
+  assert.doesNotMatch(e.message, /activate --host='fake-host' a`/, 'never bare');
 });
