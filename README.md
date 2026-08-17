@@ -131,6 +131,16 @@ It holds one reused websocket per instance and closes on idle. Read methods that
 map 1:1 to a wire response return it parsed and unrenamed; composites like
 `getInfo()` build on those and only add fields that bake in a decode.
 
+`run()` and `save()` change what the wall is showing on their first step and finish
+several steps later, so when they fail in between they say what the device was left
+holding, and attach it as `e.device = {state, id}` for callers that would rather
+branch than read prose. Four states: `maybe-paused` (loading pauses the device and
+only `run`/`save`/`activate` resume it, so the wall may be frozen — `pbz info` reads
+fps 0), `running-unsaved`, `maybe-saved`, and `saved-maybe-inactive`. A `maybe-`
+state means the command went out unacknowledged; a bare one was confirmed by the
+device. **No `device` property at all means nothing was sent and the wall was never
+touched**, which is part of the contract rather than an omission.
+
 Every method rejects rather than resolving if the connection dies under it, and
 that includes the writes the device never acks (`setVars`, `setBrightness`,
 `setSequencerMode`, and friends). `send()` on a closed socket discards the data
