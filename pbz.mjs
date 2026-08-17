@@ -146,7 +146,18 @@ function resolveHost() {
   if (h) return h;
   die('No host: pass --host=IP, set $PB_HOST, or add pb.config.json {"host":"…"}');
 }
-function die(msg) { console.error('error: ' + msg); for (const pb of instances) pb.close(); process.exit(1); }
+// True while a progress line is open (written without a trailing newline).
+// die() closes it first, or the error text glues onto "Saving \"X\" … " and the
+// word "error:" ends up buried mid-line in a paragraph that wraps over several
+// terminal rows. Observed while reading real failure output.
+let progressOpen = false;
+function progress(text) { process.stdout.write(text); progressOpen = !text.endsWith('\n'); }
+function die(msg) {
+  if (progressOpen) { process.stdout.write('\n'); progressOpen = false; }
+  console.error('error: ' + msg);
+  for (const pb of instances) pb.close();
+  process.exit(1);
+}
 function loadPowerConfig() {
   const cfg = readConfig('power.json');
   if (!cfg) die('power.json not found (searched up from the current directory) — copy power.example.json to power.json and replace every number with your own install\'s. Someone else\'s power figures are worse than none: this derives a hardware brightness cap.');
@@ -285,10 +296,10 @@ async function nudgeIfBackupStale(pb, host) {
     const { fresh, file, ageMs } = scanBackupFreshness(entries, cfg.chipId);
     if (fresh) return;
     if (!file) {
-      console.error(`warning: no local .pbb backup found for this device (chipId ${cfg.chipId}) — run \`pbz backup --host=${host}\` first`);
+      console.error(`warning: no local .pbb backup found for this device (chipId ${cfg.chipId}) — run \`pbz backup --host=${JSON.stringify(host)}\` first`);
     } else {
       const days = Math.round(ageMs / 86400000);
-      console.error(`warning: newest matching backup is ${days}d old (${file}) — run \`pbz backup --host=${host}\` first`);
+      console.error(`warning: newest matching backup is ${days}d old (${file}) — run \`pbz backup --host=${JSON.stringify(host)}\` first`);
     }
   } catch (e) {
     console.error(`warning: couldn't check backup freshness (${e.message}) — continuing`);
@@ -384,12 +395,12 @@ try {
       if (sub) {
         // Candidate pattern: compile + run live (ephemeral, like `run`), then sample it.
         const source = await readFile(sub, 'utf8');
-        process.stdout.write(`Compiling + running ${sub} live … `);
+        progress(`Compiling + running ${sub} live … `);
         await pb.run(source);
         console.log('ok (live, not saved).');
       }
       const factor = await effectiveBrightnessFactor(pb);
-      process.stdout.write('Sampling preview frames … ');
+      progress('Sampling preview frames … ');
       const frames = await pb.samplePreview(30);
       console.log(`ok (${frames.length}).`);
       printPowerEstimate(estimateDraw(frames, power, factor), power, sub ? `candidate ${sub}` : 'active pattern');
@@ -539,11 +550,11 @@ try {
     const pb = mkPixelblaze(host);
     if (flags['fs-image']) {
       const file = pos[1] || `${host}-fsimage-${new Date().toISOString().slice(0, 10)}.bin`;
-      process.stdout.write(`Requesting device-side flash image (LEDs go dark while it writes) … `);
+      progress(`Requesting device-side flash image (LEDs go dark while it writes) … `);
       const res = await pb.backupFsImage(file);
       console.log(`ok — ${res.bytes} bytes -> ${res.file} (restore by holding the button at power-up, not \`pbz restore\`)`);
     } else {
-      process.stdout.write('Fetching file list … ');
+      progress('Fetching file list … ');
       const res = await pb.saveBackup(pos[1]);
       console.log(`ok — ${res.count} files -> ${res.file}`);
       // The backup itself already succeeded — this is a bonus status read on
@@ -608,18 +619,18 @@ try {
     const host = resolveHost();
     const source = await readFile(file, 'utf8');
     const pb = mkPixelblaze(host);
-    process.stdout.write(`Fetching compiler from ${host} … `);
+    progress(`Fetching compiler from ${host} … `);
     await pb.loadTooling();
     console.log('ok');
-    process.stdout.write('Compiling … ');
+    progress('Compiling … ');
     const { program, bytecode } = await pb.compile(source);
     console.log(`ok — ${program.compiled.length} opcodes, ${program.exports.length} exports, ${bytecode.length} bytes`);
     console.log('  controls: ' + program.exports.filter(e => /^(slider|toggle|hsvPicker|rgbPicker|showNumber)/.test(e.name)).map(e => e.name).join(', '));
-    if (cmd === 'run') { process.stdout.write(`Running live on ${host} … `); await pb.run(source); console.log('ok (live, not saved).'); }
+    if (cmd === 'run') { progress(`Running live on ${host} … `); await pb.run(source); console.log('ok (live, not saved).'); }
     if (cmd === 'save') {
       const name = pos[2] || prettyName(file);
       const id = stableId(path.basename(file));
-      process.stdout.write(`Saving "${name}" to ${host} … `);
+      progress(`Saving "${name}" to ${host} … `);
       const res = await pb.save(source, name, { id });
       console.log(`ok — saved & activated (id ${res.id}; preview ${res.frames} frames, ${res.previewBytes} B).`);
       const powerCfg = readConfig('power.json');
@@ -632,10 +643,18 @@ try {
     console.log('commands: run | save | compile | set | setvars | seq | playlist | list | activate | brightness | limit | power | config | set-config | delete | export | import | info | map | reboot | ping | discover | backup | restore | defrag  (see header of this file)');
     process.exit(cmd ? 1 : 0);
   }
-  // Each command's Pixelblaze instance(s) now share one reused connection
-  // (PBZ-PLAN.md Chunk 20) instead of closing per method call — close it here
-  // so the process exits promptly instead of hanging on an open socket.
+  // Each command's Pixelblaze instance(s) share one reused connection
+  // (PBZ-PLAN.md Chunk 20) instead of closing per method call, so close it here.
   for (const pb of instances) pb.close();
+  // …and then EXIT, because close() cannot guarantee the handle is released.
+  // Measured against real undici: `ws.close()` on a peer that never completes
+  // the closing handshake parks in CLOSING and holds the TCP handle forever —
+  // no timeout anywhere in the stack. A successful `pbz ping` against a wedged
+  // ws server printed its result and then hung until killed. Only SUCCESS was
+  // affected, because the error path already exits explicitly. Drain stdout
+  // first so nothing in flight is truncated.
+  await new Promise((r) => process.stdout.write('', r));
+  process.exit(0);
 } catch (e) {
   die(e.message);
 }

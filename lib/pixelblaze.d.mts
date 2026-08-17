@@ -20,6 +20,42 @@ export interface PatternRow {
   name: string;
 }
 
+/**
+ * What a failed `run()`/`save()` left on the device (PBZ-PLAN.md Chunk 30).
+ * A `maybe-` state means the command went out unacknowledged, so the device may
+ * or may not be in it; a bare state was confirmed by the device's own ack. All
+ * four were verified against real hardware.
+ *
+ * - `maybe-paused` — loading a pattern pauses the device and nothing else in
+ *   pbz resumes it, so the wall may be frozen (`pbz info` reads fps 0). This is
+ *   the only state `run()` can leave.
+ * - `running-unsaved` — rendering now, nothing on flash, gone on reboot.
+ * - `maybe-saved` — pattern data sent, never acknowledged, so it may or may not
+ *   have landed. A partial transfer commits nothing and a re-save overwrites
+ *   the same entry, so retrying is safe. Its presence in `list()` proves
+ *   nothing either way: `stableId` means an earlier save of the same file is
+ *   already listed under that name.
+ * - `saved-maybe-inactive` — on flash for certain, activation unconfirmed. On
+ *   v3.67 a reboot boots whichever pattern was saved most recently, not
+ *   whichever was active, so this one likely comes back as the default.
+ */
+export type DeviceLeftState =
+  | 'maybe-paused'
+  | 'running-unsaved'
+  | 'maybe-saved'
+  | 'saved-maybe-inactive';
+
+/**
+ * Attached as `.device` to errors thrown by `run()` and `save()`. Its ABSENCE
+ * means nothing was sent and the device was never touched, which is part of the
+ * contract rather than an oversight. `id` is present only for `save()`, the
+ * only one of the two with a pattern id to report.
+ */
+export interface DeviceLeft {
+  state: DeviceLeftState;
+  id?: string;
+}
+
 /** A control or variable exported by a pattern. Picker controls are 3-element arrays. */
 export type ControlValue = number | [number, number, number];
 

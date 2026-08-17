@@ -141,14 +141,14 @@ test('fail() rejects a parked waiter immediately, rather than letting it time ou
   const q = makeQueues();
   const t0 = Date.now();
   const waiting = q.waitText('{"ack"', 3000, q.mark());
-  q.fail(new Error('websocket: closed mid-exchange'));
+  q.fail(() => new Error('websocket: closed mid-exchange'));
   await assert.rejects(waiting, /closed mid-exchange/);
   assert.ok(Date.now() - t0 < 500, 'must reject on the failure, not run out the 3s wait');
 });
 
 test('fail() rejects waiters that arrive after the failure, too', async () => {
   const q = makeQueues();
-  q.fail(new Error('websocket: closed mid-exchange'));
+  q.fail(() => new Error('websocket: closed mid-exchange'));
   await assert.rejects(q.waitText('{"ack"', 3000, q.mark()), /closed mid-exchange/);
   await assert.rejects(q.waitBinary(3000, 5, q.mark()), /closed mid-exchange/);
 });
@@ -158,8 +158,8 @@ test('fail() is idempotent and the FIRST cause wins', async () => {
   // ("ECONNRESET"), the close is the generic one, and the generic must not
   // overwrite it on the way past.
   const q = makeQueues();
-  q.fail(new Error('ECONNRESET'));
-  q.fail(new Error('generic close'));
+  q.fail(() => new Error('ECONNRESET'));
+  q.fail(() => new Error('generic close'));
   await assert.rejects(q.waitText('{"ack"', 100, q.mark()), /ECONNRESET/);
 });
 
@@ -169,7 +169,7 @@ test('fail() does not discard frames that already arrived', async () => {
   const q = makeQueues();
   const m = q.mark();
   q.pushBinary(chunk(5, 1, [9, 9, 9]));
-  q.fail(new Error('websocket: closed mid-exchange'));
+  q.fail(() => new Error('websocket: closed mid-exchange'));
   assert.equal(q.peekBinary(5, m).length, 1, 'a frame that arrived before the drop is still a frame');
 });
 
@@ -180,7 +180,7 @@ test('collectChunks reports the transport failure, not its own "stopped sending"
   const m = q.mark();
   q.pushBinary(chunk(7, 1, [1, 2]));           // first chunk, no last flag
   const reading = q.collectChunks(7, { ms: 3000, after: m });
-  q.fail(new Error('websocket: closed mid-exchange'));
+  q.fail(() => new Error('websocket: closed mid-exchange'));
   await assert.rejects(reading, /closed mid-exchange/);
 });
 
@@ -188,4 +188,35 @@ test('a slow device still resolves null: death and slowness stay distinguishable
   const q = makeQueues();
   assert.equal(await q.waitText('{"ack"', 30, q.mark()), null);
   assert.equal(q.failure(), null, 'a timeout must not mark the transport dead');
+});
+
+test('fail() rejects an Error where a factory is required, loudly', async () => {
+  // Passing an Error used to be silent when nothing was parked, and when
+  // something WAS parked the TypeError escaped fail(), escaped protocol.mjs's
+  // die(), and skipped the ws.close() that stops a dead socket being reused.
+  const q = makeQueues();
+  assert.throws(() => q.fail(new Error('websocket: closed')), /expects a factory function/);
+});
+
+test('fail() is idempotent by the ERROR a waiter receives, not by factory identity', async () => {
+  // Comparing the stored factory would pass for a late-binding closure that
+  // quietly emits the second cause, so assert on what a waiter actually gets.
+  // (protocol.mjs's write-once `isDead` is what enforces the discipline; its
+  // comment is where that hazard is documented.)
+  const q2 = makeQueues();
+  q2.fail(() => new Error('first'));
+  q2.fail(() => new Error('second'));
+  await assert.rejects(q2.waitText('{"ack"', 100, q2.mark()), /first/, 'the second fail() is ignored');
+});
+
+test('failure() hands back an Error, not the factory that makes one', async () => {
+  // Only the null (healthy) branch was covered, so a `failure()` that forgot to
+  // invoke the factory would have shipped a bare function to its first real
+  // caller. Found by mutation sweep.
+  const q = makeQueues();
+  assert.equal(q.failure(), null, 'healthy: nothing to report');
+  q.fail(() => new Error('websocket: closed mid-exchange'));
+  assert.ok(q.failure() instanceof Error, 'must be an Error instance');
+  assert.match(q.failure().message, /closed mid-exchange/);
+  assert.notEqual(q.failure(), q.failure(), 'and a fresh one each time, so annotations cannot collide');
 });

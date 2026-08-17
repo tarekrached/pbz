@@ -6,7 +6,18 @@
 // check that a signature is right, which is what this file is for. Run both
 // with `npm run typecheck`.
 import { Pixelblaze } from '../../lib/pixelblaze.mjs';
-import type { DeviceInfo, PlaylistItem, DiscoveredDevice, ControlValue, PixelblazeOptions, DefragResult } from '../../lib/pixelblaze.mjs';
+import type { DeviceInfo, PlaylistItem, DiscoveredDevice, ControlValue, PixelblazeOptions, DefragResult, DeviceLeft, DeviceLeftState } from '../../lib/pixelblaze.mjs';
+
+// Chunk 30: what a fan-out caller actually does with a failed save — branch on
+// the device state instead of regexing the message. The absence of `.device`
+// is the "nothing was sent" case and is part of the contract.
+export function classifyFailedSave(e: unknown): DeviceLeftState | 'untouched' {
+  const left: DeviceLeft | undefined = (e as { device?: DeviceLeft }).device;
+  if (!left) return 'untouched';
+  const id: string | undefined = left.id;
+  if (left.state === 'saved-maybe-inactive' && id) return 'saved-maybe-inactive';
+  return left.state;
+}
 
 export async function exerciseEveryMethod() {
   const pb = new Pixelblaze('192.168.1.50');
