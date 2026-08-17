@@ -895,7 +895,11 @@ the fix surface before a first release:
     "Rainbow Worms" entry rather than creating a new one. Working as designed — that id rule is
     what makes re-saving a file update in place — but there is no warning, and a reviewer
     exercising Chunk 30 hit it on a real device and had to restore the entry by hand. At minimum
-    it deserves a note when the derived id already exists under a different name.
+    it deserves a note when the derived id already exists under a different name. **Two
+    independent reviewers hit this on real hardware** while exercising Chunk 30 — one had to
+    restore a renamed entry by hand, the other silently overwrote a pattern that predated its
+    session and restored it at cleanup. A trap that catches two careful people in two days is a
+    usability defect, not a documentation gap.
 14. **A late resume ack can burn a slot in `save()`'s completion accounting.** The resume's own
     ack is waited for with a 1 s budget and, on timeout, left in the queue. On a device
     documented to stall for 107 s it can arrive after the `putSourceCode` mark, get claimed as
