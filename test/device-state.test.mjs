@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 import { Pixelblaze } from '../lib/pixelblaze.mjs';
 import { PREVIEW_W } from '../lib/preview.mjs';
 import { stableId } from '../lib/pbp.mjs';
+import { CHUNK_BYTES } from '../lib/protocol.mjs';
 
 const previewFrame = () => { const b = Buffer.alloc(1 + PREVIEW_W * 3); b[0] = 5; return b; };
 
@@ -33,14 +34,19 @@ const previewFrame = () => { const b = Buffer.alloc(1 + PREVIEW_W * 3); b[0] = 5
  * 'resume', 'putSourceCode', 'activate'. `throwOn` makes a SEND throw the way a
  * dead connection does since Chunk 29, before any byte leaves the machine.
  */
-function fakeConn({ suppress = [], throwOn = null, frames = 150, chunkAcks = 1, withholdCompletion = false, framesThrow = false } = {}) {
+function fakeConn({ suppress = [], throwOn = null, frames = 150, withholdCompletion = false, framesThrow = false } = {}) {
   const held = new Set(suppress);
   const inbox = [];
+  let seq = 0;
   const ACK = '{"ack":1}';
-  const emit = (what, frame) => { if (!held.has(what)) inbox.push(frame); };
+  // Sequenced, and mark()/waitText honour it: the watermark is the mechanism
+  // the whole invariant rests on, and a fake that ignores it cannot catch a
+  // wait that claims an ack queued before its own command.
+  const emit = (what, frame) => { if (!held.has(what)) inbox.push({ seq: ++seq, frame }); };
   return {
     sent: [],
-    mark: () => 0,
+    stale: () => emit('stale', ACK), // an ack left over from an earlier command
+    mark: () => seq,
     dead: () => null,
     close: () => {},
     json(msg) {
@@ -55,13 +61,16 @@ function fakeConn({ suppress = [], throwOn = null, frames = 150, chunkAcks = 1, 
     sendBytecode(blob, type) {
       if (throwOn === 'putSourceCode' && type === 1) throw new Error('websocket: connection died');
       if (type !== 1) return;
-      // One ack per frame, only the last carrying the completion marker.
-      for (let i = 0; i < chunkAcks - 1; i++) emit('putSourceCode', ACK);
+      // ONE ACK PER FRAME, derived from the real blob, with only the last
+      // carrying the completion marker — that is what the device does, and a
+      // fixed count decoupled from the payload let the loop go untested.
+      const chunks = Math.max(1, Math.ceil(blob.length / CHUNK_BYTES));
+      for (let i = 0; i < chunks - 1; i++) emit('putSourceCode', ACK);
       emit('putSourceCode', withholdCompletion ? ACK : '{"ack":1,"saveProgramSourceFile":true}');
     },
-    async waitText(prefix) {
-      const i = inbox.findIndex(f => f.startsWith(prefix));
-      return i < 0 ? null : inbox.splice(i, 1)[0]; // null == timed out, as the real one does
+    async waitText(prefix, ms, after = -1) {
+      const i = inbox.findIndex(e => e.seq > after && e.frame.startsWith(prefix));
+      return i < 0 ? null : inbox.splice(i, 1)[0].frame; // null == timed out
     },
     async collectFrames() {
       if (framesThrow) throw new Error('websocket: connection died');
@@ -150,9 +159,35 @@ test('save: a withheld putSourceCode ack does not advise deleting anything', asy
 test('save: acks for early chunks do not count as the write completing', async () => {
   // The device acks EVERY frame and only the last carries the completion
   // marker, so claiming the first ack advanced the cursor on chunk 1 of N.
-  const e = await failed(pbWith(fakeConn({ chunkAcks: 4, withholdCompletion: true, suppress: ['activate'] })).save('src', 'Sweep'));
+  // The fake derives its ack count from the real blob, so this genuinely
+  // exercises the loop rather than a hand-set number.
+  const e = await failed(pbWith(fakeConn({ withholdCompletion: true, suppress: ['activate'] })).save('src', 'Sweep'));
   assert.equal(e.device.state, 'maybe-saved', 'plain chunk acks must not earn "saved"');
   assert.doesNotMatch(e.message, /IS saved to the device/);
+});
+
+test('save: the completion marker is found across a multi-chunk write', async () => {
+  // The positive half: a real multi-chunk blob (150 preview frames make one)
+  // must still reach `saved-maybe-inactive`, so the loop cannot be "fixed" by
+  // simply never promoting.
+  const conn = fakeConn({ suppress: ['activate'] });
+  const e = await failed(pbWith(conn).save('src', 'Sweep'));
+  assert.equal(e.device.state, 'saved-maybe-inactive');
+});
+
+test('save: a stale ack queued before the write cannot satisfy its completion wait', async () => {
+  // The watermark is what stops an ack from an earlier command answering a
+  // later one. Without it, a leftover ack would be claimed as chunk 1 and shift
+  // the whole sequence by one.
+  const conn = fakeConn({ suppress: ['activate'] });
+  const pb = pbWith(conn);
+  // Emitted during the preview collection, i.e. BEFORE save() takes the mark
+  // for the write. Hooking a later step would make it seq > mark and therefore
+  // legitimately claimable, which is a test bug rather than a device one.
+  const original = conn.collectFrames.bind(conn);
+  conn.collectFrames = async (...a) => { const f = await original(...a); conn.stale(); return f; };
+  const e = await failed(pb.save('src', 'Sweep'));
+  assert.equal(e.device.state, 'saved-maybe-inactive', 'a stale ack must not consume the completion slot');
 });
 
 test('save: a withheld activate reports it IS saved, with the true reboot behaviour', async () => {

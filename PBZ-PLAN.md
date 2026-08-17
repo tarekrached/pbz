@@ -1364,8 +1364,9 @@ it had just started was still rendering, unsaved and absent from `pbz list`.
   was rendering on evidence that said nothing about the pause — and made item 8's own zero-frame
   error answer its "Is the pattern rendering?" with a confident yes over a frozen wall. The
   resume's own ack is the NEXT one.
-- **Preview frames are better evidence than the ack.** Frames arriving prove the renderer is
-  running, so a lost resume ack is forgiven the moment the device draws something. A useful
+- **Preview frames are better evidence than the ack**, and that is measured, not assumed: a
+  rendering device returned 10 frames at once while a **paused** one returned 0 in 4 s, so the
+  inference holds in both directions. A lost resume ack is forgiven the moment the device draws. A useful
   consequence: **no save-side state can coexist with an unconfirmed resume**, because every one
   of them is downstream of the frames. A combined "paused and saved" state cannot occur, and a
   test pins that so nobody adds one.
@@ -1374,11 +1375,16 @@ it had just started was still rendering, unsaved and absent from `pbz list`.
   4-chunk write: plain acks at 41/67/94 ms, marked at 126 ms). Claiming the first advanced the
   cursor on chunk 1 of N, so on a board slow enough for it to matter we would have reported a
   completed flash write while the transfer was still in flight. `CHUNK_BYTES` is now exported
-  from `protocol.mjs` so the ack count is derived rather than duplicated.
+  from `protocol.mjs` so the ack count is derived rather than duplicated. **Only the first ack is
+  required**; the rest are best-effort, because a firmware sending fewer acks than chunks must
+  leave us under-claiming rather than turning a write that landed into a hard failure.
 - **Never say "saved" without the completion ack; never say "not saved" with it.**
 - **`run()` is in scope for the pause window only,** and it no longer returns success on a lost
   resume: `pbz run` printed "ok (live, not saved)" over a frozen wall, which is the same false
-  success Chunk 24 existed to remove.
+  success Chunk 24 existed to remove. The generic "did not acknowledge both resume commands"
+  message is reserved for a genuine TIMEOUT — a transport death keeps protocol.mjs's own error,
+  since replacing it would undo Chunk 29 on this path, and `pbz power <pattern>` runs through
+  here too, not just `pbz run`.
 - **Annotated in place, not re-wrapped.** `defrag()`'s precedent (Chunk 28) is prose in the
   message, and that stays. The divergence is refusing to build a new `Error`: Chunk 29 spent a
   whole pass making transport errors carry a real cause and a recovery pointer, and flattening
@@ -1409,13 +1415,16 @@ it had just started was still rendering, unsaved and absent from `pbz list`.
   previously active pattern on reboot — reproduced three times, the boot pointer follows the most
   recently **saved** pattern, and a later `activate` of something else does not stick. Both
   messages that leaned on the intuitive behaviour were rewritten to the measured one.
-- **Acceptance:** 21 new hermetic tests, **213 total**, typecheck green. **Every message is
+- **Acceptance:** 24 new hermetic tests, **216 total**, typecheck green. **Every message is
   asserted twice — for what it claims and for what it must NOT claim** — because a state cursor
   one step ahead produces a plausible, wrong, confident message rather than a crash. Load-bearing
   proof: against the pre-fix library the new tests fail (the handful that pass assert the ABSENCE
   of a note, so they pass by construction); mutations that advance the resume cursor before its
-  ack, that swap the two save-side states, and that restore the shared Error instance are each
-  caught by exactly the test written for them.
+  ack, that swap the two save-side states, that restore the shared Error instance, that collapse
+  the completion-ack loop back to a single claim, and that drop the watermark from that loop are
+  each caught by exactly the test written for them. The test fake was rewritten twice for this:
+  it now acks per COMMAND, derives its chunk acks from the real payload, and honours the
+  watermark — three fidelity gaps that each let a real defect through.
 - **Size:** S.
 - **Deliberately NOT in scope:** the single-step writes (`activate`, `delete`, `setControls`,
   `setConfig`), whose existing messages already describe their whole story; `defrag()`, which

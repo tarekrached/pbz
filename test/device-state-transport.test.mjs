@@ -91,3 +91,22 @@ test('a save annotation cannot leak onto a concurrent reader\'s error', async ()
     assert.notEqual(saveErr, readErr, 'and they must not be the same object');
   });
 });
+
+test('run: a transport death keeps the transport\'s own error, not a generic one', async () => {
+  // run() now fails loudly when the resume goes unacknowledged. An earlier cut
+  // of that swallowed the rejection and threw a fresh generic Error in its
+  // place, discarding the device address, the close code and the recovery
+  // pointer — undoing Chunk 29 on this path. `pbz power <pattern>` goes through
+  // run() too, so it is not only `pbz run` that would have lost them.
+  await withFakeSocket(async (getSock) => {
+    const pb = stubbedPb();
+    const running = failed(pb.run('src'));
+    await new Promise(r => setTimeout(r, 30));
+    getSock().onclose?.({ code: 1006 });
+    const e = await running;
+    assert.match(e.message, /closed the connection mid-exchange \(code 1006\)/, 'the transport error must survive');
+    assert.match(e.message, /Device etiquette & recovery/);
+    assert.doesNotMatch(e.message, /did not acknowledge both resume commands/, 'the generic message is for a TIMEOUT, not a death');
+    assert.equal(e.device.state, 'maybe-paused');
+  });
+});

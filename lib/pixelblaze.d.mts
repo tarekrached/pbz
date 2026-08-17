@@ -30,11 +30,15 @@ export interface PatternRow {
  *   pbz resumes it, so the wall may be frozen (`pbz info` reads fps 0). This is
  *   the only state `run()` can leave.
  * - `running-unsaved` — rendering now, nothing on flash, gone on reboot.
- * - `maybe-saved` — pattern data sent, never acknowledged. A partial transfer
- *   commits nothing, so an entry appearing in `list()` means the write did
- *   complete and only the acknowledgement was lost.
+ * - `maybe-saved` — pattern data sent, never acknowledged, so it may or may not
+ *   have landed. A partial transfer commits nothing and a re-save overwrites
+ *   the same entry, so retrying is safe. Its presence in `list()` proves
+ *   nothing either way: `stableId` means an earlier save of the same file is
+ *   already listed under that name.
  * - `saved-maybe-inactive` — on flash for certain; the activation was not
- *   confirmed, so the device may revert to the previous pattern on reboot.
+ *   confirmed. Verified on v3.67: a reboot boots whichever pattern was saved
+ *   most recently rather than whichever was active, so this one is likely to
+ *   come back as the default. It does NOT revert to the previous pattern.
  */
 export type DeviceLeftState =
   | 'maybe-paused'
