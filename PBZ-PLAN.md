@@ -1305,8 +1305,13 @@ can now throw where they previously could not; their JSDoc says so.
   `IDLE_CLOSE_MS`, not the device. A rebooting ESP32 sends no FIN, so a socket that is only
   *listening* learns nothing; our own idle backstop was what forced the issue. Re-run with a
   send after the reboot: the stale send itself returns no error (the OS hasn't noticed at
-  +1ms), the RST comes back, and the parked wait rejects at **1945ms** with
-  `websocket: connection error (mid-exchange, 192.168.1.187:81)`. So the honest characterisation
+  +1ms), the RST comes back, and the parked wait rejects at **~2s** with
+  `websocket: connection to 192.168.1.187:81 failed mid-exchange (no detail reported by the
+  socket) — it may have rebooted, dropped off wifi, or wedged its ws server (see "Device
+  etiquette & recovery")`. Note the parenthetical: on this real death undici's `ErrorEvent`
+  carried **nothing** usable, neither `.message` nor `.error.message`, which is exactly why the
+  message has to name the device and the playbook on its own rather than leaning on the event.
+  So the honest characterisation
   is **detection needs traffic**: every request/response method sends before it waits, so those
   see ~2s; a pure listener (`getStatus()` marks and waits without sending) waits out the idle
   backstop. Both are improvements on the old full-timeout-then-`InvalidStateError`, but only the
