@@ -369,6 +369,13 @@ Prior art worth knowing:
   pbbeacon generates *source* you then load, while pbz takes source you already
   have and produces the *bytecode* the device runs. Heads up that it also uses
   the `.pbb` extension, for its own script files rather than for backups.
+- [PXLBLZ-IDE](https://github.com/jon-whiteroomsoftware/PXLBLZ-IDE), a browser
+  IDE with a pattern editor, a WebGL simulator over 1D/2D/3D maps, and a
+  timeline for compositing patterns into shows. It took the opposite path on
+  the compiler problem: a full reimplementation in TypeScript, where pbz
+  extracts the device's own. Reimplementing enables what extraction can't:
+  simulation without hardware, and injecting brightness/power wrappers into
+  patterns.
 - [Firestorm](https://github.com/simap/Firestorm), the official multi-device
   console. It forwards already-compiled patterns; the library half of pbz could
   serve as a backend for something similar.
