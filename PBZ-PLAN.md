@@ -889,7 +889,14 @@ the fix surface before a first release:
     quarantined nor on `WRITE_ACK_TIMEOUT_MS`**, unlike `activate()`'s own, so a late reply to an
     abandoned save is fair game for the next call on that connection to misclaim. Found while
     writing Chunk 30 and deliberately left out of it: a behaviour change, not a message.
-13. **`putSourceCode` gets the shortest ack budget for the largest write pbz makes.** Chunk 26
+13. **`pbz save <file> [Name]` derives the device id from the FILE BASENAME, not the name.**
+    `id = stableId(basename(file))` (`pbz.mjs`), independent of the `Name` argument, so saving
+    `patterns/rainbow-worms.js` as "Scratch Test" silently **renames** the device's existing
+    "Rainbow Worms" entry rather than creating a new one. Working as designed — that id rule is
+    what makes re-saving a file update in place — but there is no warning, and a reviewer
+    exercising Chunk 30 hit it on a real device and had to restore the entry by hand. At minimum
+    it deserves a note when the derived id already exists under a different name.
+14. **`putSourceCode` gets the shortest ack budget for the largest write pbz makes.** Chunk 26
     moved the small writes to 8 s; `save()`'s internal acks kept the 3 s default, and the README
     documents that deliberately. On a GC-grinding board this is where `save` fails first. Same
     origin as 12, same reason for keeping it separate.
@@ -1275,6 +1282,7 @@ can now throw where they previously could not; their JSDoc says so.
   queue. `ws.onclose` routes there too, so a device that simply hangs up is caught even though
   it never fires an error.
 - **`queue.fail(err)` rejects every parked waiter now, and every later one on arrival.**
+  *(Superseded by Chunk 30: it takes a FACTORY now, so each waiter gets its own Error.)*
   Waiters reject rather than resolving null, so callers get the transport's real reason instead
   of `expectText`'s generic "timed out … the command may not have taken effect". A slow device
   still resolves null: **death and slowness stay distinguishable**, which is the property the

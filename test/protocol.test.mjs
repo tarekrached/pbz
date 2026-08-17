@@ -327,3 +327,19 @@ test('the idle backstop marks the connection dead at once too', async () => {
   await sleep(90);
   assert.throws(() => c.json({ ping: true }), /no request used it for 40ms/);
 });
+
+test('an Error with an empty message still kills the connection for good', async () => {
+  // The death is tracked by a flag, not by the truthiness of the stored
+  // message. Guarding on the string let an empty-message Error leave the
+  // connection alive-but-broken, and let a SECOND cause overwrite the first —
+  // which the queue's factory closes over, so even already-parked waiters would
+  // have started receiving the later, vaguer reason.
+  const { c, ws } = fakeConnect(5000);
+  await c.opened;
+  ws.onerror?.({ message: '', error: { message: '' } }); // nothing usable at all
+  assert.ok(c.dead(), 'a contentless error must still mark the connection dead');
+  const first = c.dead().message;
+  ws.onclose?.({ code: 1006 }); // a second, later cause
+  assert.equal(c.dead().message, first, 'first cause must still win');
+  assert.throws(() => c.json({ ping: true }), /./, 'and sends must still refuse');
+});

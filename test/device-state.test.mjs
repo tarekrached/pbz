@@ -101,7 +101,7 @@ test('save: a withheld setCode ack reports only that the device MAY be paused', 
   assert.match(e.message, /fps 0/, 'the note must give a way to check');
   assert.doesNotMatch(e.message, /IS saved/, 'nothing was written and nothing may say so');
   assert.doesNotMatch(e.message, /`pbz list`/, 'that is the maybe-saved advice, not this state');
-  assert.doesNotMatch(e.message, /IS live/, 'the resume never happened');
+  assert.doesNotMatch(e.message, /WAS live/, 'the resume never happened');
 });
 
 test('save: setControls acked but the RESUME lost stays maybe-paused', async () => {
@@ -113,7 +113,7 @@ test('save: setControls acked but the RESUME lost stays maybe-paused', async () 
   const e = await failed(pbWith(fakeConn({ suppress: ['resume'], framesThrow: true })).save('src', 'Sweep'));
   assert.equal(e.device.state, 'maybe-paused');
   assert.match(e.message, /may be sitting frozen/);
-  assert.doesNotMatch(e.message, /IS live on the device/, 'the resume was never acknowledged');
+  assert.doesNotMatch(e.message, /WAS live on the device/, 'the resume was never acknowledged');
 });
 
 test('save: preview frames are accepted as proof of rendering when the ack was lost', async () => {
@@ -128,7 +128,7 @@ test('save: zero preview frames, resume acked, reports live-but-unsaved', async 
   const e = await failed(pbWith(fakeConn({ frames: 0 })).save('src', 'Sweep'));
   assert.equal(e.device.state, 'running-unsaved');
   assert.match(e.message, /no preview frames/, 'the original error must survive intact');
-  assert.match(e.message, /IS live on the device/);
+  assert.match(e.message, /WAS live on the device/, 'past tense: a reboot may already have ended it');
   assert.match(e.message, /absent from `pbz list`/);
   assert.doesNotMatch(e.message, /may be sitting frozen/, 'the resume WAS acked here');
 });
@@ -141,7 +141,7 @@ test('save: zero preview frames with the resume LOST reports the frozen wall ins
   assert.equal(e.device.state, 'maybe-paused');
   assert.match(e.message, /no preview frames/);
   assert.match(e.message, /may be sitting frozen/, 'the likeliest cause of zero frames');
-  assert.doesNotMatch(e.message, /IS live on the device/);
+  assert.doesNotMatch(e.message, /WAS live on the device/);
 });
 
 test('save: a withheld putSourceCode ack does not advise deleting anything', async () => {

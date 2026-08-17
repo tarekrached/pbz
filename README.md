@@ -54,6 +54,8 @@ pbz's own directory. That's so a project can keep its own `pb.config.json` and
 # --- patterns ---
 pbz compile patterns/foo.js         # validate + list exported controls; sends nothing
 pbz run patterns/foo.js             # push live, NOT saved. The iteration loop
+                                    #   fails if the device never confirms it resumed
+                                    #   rendering — see "As a library" on device state
 pbz save patterns/foo.js [Name]     # persist + activate, renders a preview thumbnail
 pbz list                            # saved patterns, id + name
 pbz activate "Rainbow Worms"        # switch the active pattern

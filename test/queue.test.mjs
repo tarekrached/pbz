@@ -189,3 +189,26 @@ test('a slow device still resolves null: death and slowness stay distinguishable
   assert.equal(await q.waitText('{"ack"', 30, q.mark()), null);
   assert.equal(q.failure(), null, 'a timeout must not mark the transport dead');
 });
+
+test('fail() rejects an Error where a factory is required, loudly', async () => {
+  // Passing an Error used to be silent when nothing was parked, and when
+  // something WAS parked the TypeError escaped fail(), escaped protocol.mjs's
+  // die(), and skipped the ws.close() that stops a dead socket being reused.
+  const q = makeQueues();
+  assert.throws(() => q.fail(new Error('websocket: closed')), /expects a factory function/);
+});
+
+test('fail() is idempotent by the ERROR a waiter receives, not by factory identity', async () => {
+  // The earlier version of this test compared the stored factory, which a
+  // late-binding closure passes while quietly emitting the second cause.
+  const q = makeQueues();
+  let cause = 'ECONNRESET';
+  q.fail(() => new Error(cause));   // a factory that reads a mutable reason
+  cause = 'generic close';          // ...which a later cause would change
+  await assert.rejects(q.waitText('{"ack"', 100, q.mark()), /generic close/,
+    'documents the late-binding hazard: protocol.mjs must not let the reason change');
+  const q2 = makeQueues();
+  q2.fail(() => new Error('first'));
+  q2.fail(() => new Error('second'));
+  await assert.rejects(q2.waitText('{"ack"', 100, q2.mark()), /first/, 'the second fail() is ignored');
+});

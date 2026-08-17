@@ -28,7 +28,10 @@ const results = await Promise.all(hosts.map(async (host) => {
     const { id } = await pb.save(source, name);
     return { host, ok: true, id };
   } catch (err) {
-    return { host, ok: false, error: err.message };
+    // `err.device` is what a fan-out actually needs: with N devices you cannot
+    // read N error messages and work out which walls need attention. Its
+    // ABSENCE means that device was never touched. See DeviceLeftState.
+    return { host, ok: false, error: err.message, left: err.device?.state ?? null };
   } finally {
     pb.close();
   }
@@ -36,5 +39,15 @@ const results = await Promise.all(hosts.map(async (host) => {
 
 for (const r of results) {
   console.log(r.ok ? `${r.host}  saved & activated (id ${r.id})` : `${r.host}  FAILED: ${r.error}`);
+}
+
+// The devices left mid-change, which is the list you act on. A frozen wall is
+// the urgent one; `null` means that host was never touched at all.
+const touched = results.filter(r => r.left);
+if (touched.length) {
+  console.log('\nleft mid-change:');
+  for (const r of touched) console.log(`  ${r.host}  ${r.left}`);
+  const frozen = touched.filter(r => r.left === 'maybe-paused').map(r => r.host);
+  if (frozen.length) console.log(`  ^ possibly FROZEN (fps 0): ${frozen.join(', ')}`);
 }
 process.exit(results.every(r => r.ok) ? 0 : 1);
