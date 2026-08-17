@@ -925,13 +925,15 @@ the fix surface before a first release:
     an open that resolves after a `close()` reassigns `this._conn`, leaving a live socket nobody
     holds for up to `idleMs`. Pre-dates Chunk 30, and the CLI's `die()` iterates `instances` and
     would miss it.
-17. **A caller whose wait rejects at the error event never sees the close code.** Measured: a
+17. ~~**A caller whose wait rejects at the error event never sees the close code.**~~ **DONE.** Measured: a
     device rebooting mid-command fires `error` (empty message) and then `close` (`code 1006`)
     0.2 ms apart, and the parked waiter is failed by the first. `die()` now lets the code UPGRADE
     the recorded reason, so anything asking afterwards gets it, but the caller already rejected
     with "no detail reported by the socket". Fixing that properly means deferring a contentless
     death by one turn to let the close coalesce, which adds a timing dependency to every death;
-    deliberately not done for one clause of a message.
+    Measurement changed the calculus: undici's `ErrorEvent` is EMPTY in all 20 peer behaviours
+    produced, and the close carrying the code lands in the SAME tick, so the deferral costs a tick
+    rather than a timing dependency, and it was 100% of the reboot rows rather than an edge case.
 18. **`putSourceCode` gets the shortest ack budget for the largest write pbz makes.** Chunk 26
     moved the small writes to 8 s; `save()`'s internal acks kept the 3 s default, and the README
     documents that deliberately. On a GC-grinding board this is where `save` fails first. Same

@@ -643,10 +643,18 @@ try {
     console.log('commands: run | save | compile | set | setvars | seq | playlist | list | activate | brightness | limit | power | config | set-config | delete | export | import | info | map | reboot | ping | discover | backup | restore | defrag  (see header of this file)');
     process.exit(cmd ? 1 : 0);
   }
-  // Each command's Pixelblaze instance(s) now share one reused connection
-  // (PBZ-PLAN.md Chunk 20) instead of closing per method call — close it here
-  // so the process exits promptly instead of hanging on an open socket.
+  // Each command's Pixelblaze instance(s) share one reused connection
+  // (PBZ-PLAN.md Chunk 20) instead of closing per method call, so close it here.
   for (const pb of instances) pb.close();
+  // …and then EXIT, because close() cannot guarantee the handle is released.
+  // Measured against real undici: `ws.close()` on a peer that never completes
+  // the closing handshake parks in CLOSING and holds the TCP handle forever —
+  // no timeout anywhere in the stack. A successful `pbz ping` against a wedged
+  // ws server printed its result and then hung until killed. Only SUCCESS was
+  // affected, because the error path already exits explicitly. Drain stdout
+  // first so nothing in flight is truncated.
+  await new Promise((r) => process.stdout.write('', r));
+  process.exit(0);
 } catch (e) {
   die(e.message);
 }

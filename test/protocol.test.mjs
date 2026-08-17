@@ -300,17 +300,33 @@ test('an answer that arrived before the drop is still delivered, not discarded',
 });
 
 test('a contentless ErrorEvent still names the device and the playbook', async () => {
-  // undici gives ErrorEvent an empty `.message`, so reading only that degraded
-  // every real death to the literal string "connection error" — and since the
-  // error event beats the close event, that vaguer message won.
+  // undici's ErrorEvent is empty in every peer behaviour measured, so reading
+  // only `.message` would degrade every real death to a bare string. The death
+  // is DEFERRED a tick here (see below), so this waits for it.
   const { c, ws } = fakeConnect(5000);
   await c.opened;
   ws.onerror?.({});
+  await sleep(5);
   assert.match(c.dead().message, /connection to fake:81 failed mid-exchange/);
   assert.match(c.dead().message, /no detail reported by the socket/);
   assert.match(c.dead().message, /Device etiquette/, 'must still point at the recovery playbook');
 });
 
+test('a contentless error yields to the close code, for the PARKED WAITER too', async () => {
+  // The measured reality: undici fires `error` with nothing in it and then
+  // `close` carrying the code, in the SAME tick. Recording the error's death
+  // immediately meant every parked waiter rejected with "no detail reported by
+  // the socket" while dead() a moment later held "(code 1006)" — and that was
+  // 100% of the reboot and dropout rows, not an edge case. Deferring the
+  // contentless death by a tick lets the informative one win for the caller,
+  // which is the only place it matters.
+  const { c, ws } = fakeConnect(5000);
+  await c.opened;
+  const parked = c.waitText('{"ack"', 3000, c.mark());
+  ws.onerror?.({});              // empty, as undici really sends it
+  ws.onclose?.({ code: 1006 });  // the real cause, same tick
+  await assert.rejects(parked, /code 1006/, 'the waiter must get the code, not the empty error');
+});
 test('our own close marks the connection dead at once, not a turn later', async () => {
   // Against a real socket, close() leaves readyState CLOSING and `close` fires
   // later. In that window a send SILENTLY no-ops — reporting success for a
@@ -329,31 +345,21 @@ test('the idle backstop marks the connection dead at once too', async () => {
   assert.throws(() => c.json({ ping: true }), /no request used it for 40ms/);
 });
 
-test('a close code upgrades a contentless error, but cannot overwrite a detailed one', async () => {
-  // Measured on real hardware: a device rebooting mid-command fires `error`
-  // with an EMPTY message and then `close` carrying `code 1006`, 0.2ms apart.
-  // Plain first-cause-wins kept the useless half and discarded the code that
-  // distinguishes a device that dropped from a clean hangup. So the rule is
-  // first-cause-wins EXCEPT that detail may upgrade emptiness — never the
-  // reverse, or a vague close would still be able to bury a real error.
-  const a = fakeConnect(5000);
-  await a.c.opened;
-  a.ws.onerror?.({ message: '', error: { message: '' } }); // nothing usable
-  assert.ok(a.c.dead(), 'a contentless error must still mark the connection dead');
-  a.ws.onclose?.({ code: 1006 });
-  assert.match(a.c.dead().message, /code 1006/, 'the code must win over an empty reason');
-  assert.throws(() => a.c.json({ ping: true }), /./, 'and sends still refuse');
-
+test('a detailed cause is never overwritten by a vaguer one', async () => {
+  // Detail may replace emptiness; never the reverse, or a vague close would
+  // bury a real error.
   const b = fakeConnect(5000);
   await b.c.opened;
-  b.ws.onerror?.({ message: '', error: new TypeError('read ECONNRESET') }); // detailed
+  b.ws.onerror?.({ message: '', error: new TypeError('read ECONNRESET') }); // detailed: recorded at once
   b.ws.onclose?.({ code: 1006 });
+  await sleep(5);
   assert.match(b.c.dead().message, /read ECONNRESET/, 'a detailed cause must NOT be overwritten');
 
   const d = fakeConnect(5000);
   await d.c.opened;
-  d.ws.onerror?.({ message: '', error: { message: '' } });
+  d.ws.onerror?.({});
   d.ws.onclose?.({}); // a close with no code is no better than what we had
+  await sleep(5);
   assert.doesNotMatch(d.c.dead().message, /code/, 'a contentless close must not churn the reason');
 });
 test('a send refuses on a socket that closed but has not fired its event yet', async () => {
@@ -475,4 +481,45 @@ test('a real close event still beats the grace timer and keeps its code', async 
   ws.onclose?.({ code: 1006 }); // the real cause, immediately after
   await assert.rejects(parked, /code 1006/, 'the code must win over the deferred generic death');
   assert.match(c.dead().message, /code 1006/);
+});
+
+test('a socket parked in CLOSING is noticed even when nobody is sending', async () => {
+  // The realistic caller shape: every method in Pixelblaze marks, sends once,
+  // then PARKS in waitText. The send-side grace timer therefore never arms, so
+  // a peer that sends a close frame without a FIN — where undici parks in
+  // CLOSING forever and no event ever arrives — left the waiter to time out and
+  // be reported as "the device may be slow" about a device that is gone. The
+  // liveness poll is the only signal available, since readyState is the only
+  // thing that changes.
+  const { c, ws } = fakeConnect(60_000); // idle backstop far away
+  await c.opened;
+  const parked = c.waitText('{"ack"', 30_000, c.mark());
+  ws.readyState = 2; // CLOSING, and this fake never fires onclose — as undici does not
+  const t0 = Date.now();
+  await assert.rejects(parked, /went away without closing cleanly/, 'a parked waiter must not sit there forever');
+  assert.ok(Date.now() - t0 < 2000, `should be caught by the liveness poll, took ${Date.now() - t0}ms`);
+});
+
+test('a polite close is not described as a fault', async () => {
+  // Reporting "it may have rebooted, dropped off wifi, or wedged its ws server"
+  // about a peer that closed correctly is alarming about good behaviour, and it
+  // dilutes that pointer for the rows that actually need it.
+  const { c, ws } = fakeConnect(5000);
+  await c.opened;
+  ws.onclose?.({ code: 1000, reason: 'bye' });
+  assert.match(c.dead().message, /closed the connection \(code 1000, "bye"\)/, 'and the reason is not discarded');
+  assert.doesNotMatch(c.dead().message, /wedged its ws server/);
+  assert.doesNotMatch(c.dead().message, /mid-exchange/);
+});
+
+test('a connection that never opened names the device and the playbook', async () => {
+  // The most frequent death of all — every reboot, including the ones pbz
+  // itself causes — was the one message carrying neither host, port, nor any
+  // pointer at recovery.
+  const { c, ws } = fakeConnectFailing(50);
+  const rejection = assert.rejects(c.opened, /could not connect to fake:81/);
+  ws.onerror?.({ message: '' });
+  await rejection;
+  const e = await c.opened.catch((x) => x);
+  assert.match(e.message, /Device etiquette & recovery/);
 });
