@@ -50,6 +50,8 @@ protects — done); all are buildable before the sensor board lands (~week of 20
 - [x] **26 — write-latency watchdog** (S–M — same origin; the signal that would have caught it weeks early)
 - [x] **27 — backup-freshness nudge** (S — the `.pbb` is what made the incident survivable)
 - [x] **28 — `defrag`: OTA deep clean** (M — do after 25+26; they are its go/no-go gate)
+- [x] **29 — connection death is an event, not a timeout** (S — 2026-08-16, post-publish item 1)
+- [x] **30 — a failed `save()` says what it left on the device** (S — 2026-08-16, post-publish item 8)
 
 Suggested order by value: **0, 1, 2, 11, 4, 3, 7, 5, 6, 12, 13, 8, 9, 10.**
 Remaining, by value: **20, 14, 15 done**; **16 implemented but unverified** (`seq time` still
@@ -866,9 +868,14 @@ the fix surface before a first release:
 7. **`getState()` still tolerates null on both of its reads** and returns
    `{vars:{}, name:undefined, …}`, so `pbz get` prints "active: undefined (undefined)" against a
    silent device. The one silent-null path Chunk 24 left uncovered.
-8. **Zero-frame `save()` throws, but only after the pattern is already running on the device**,
-   and the message doesn't say so. A user who hits it is left with an unsaved pattern live on the
-   wall and no indication that happened.
+8. ~~**Zero-frame `save()` throws, but only after the pattern is already running on the device.**~~
+   — **DONE 2026-08-16, Chunk 30.** As with item 1, **this entry's own framing was too narrow.**
+   The zero-frame throw is one of *four* failure points past the moment the wall changes, and it
+   is not the worst of them: a failure in the **pause window** leaves the device frozen, and
+   nothing in pbz except `run`/`save` themselves sends `{pause:false}`, so the user has a dark
+   wall and no obvious verb. `run()` has the same window and is fixed with it. Errors from both
+   now carry a note saying what the device is holding and how to get it back, plus a structured
+   `e.device` for library callers.
 9. **Cap eviction can still produce a silent short read in `collectChunks`** — reproduced at
    `maxQueued` 3; needs >256 mid-transfer binary frames in practice. The surviving frame's flag
    bits would catch it (first-chunk bit clear on a frame that should start a transfer).
@@ -877,6 +884,14 @@ the fix surface before a first release:
 11. **`getInfo()` now fails as a whole** (`Promise.all`) if the status cadence gaps past 3 s, on a
     device documented to stall for 107 s. Intended trade — a composite that silently returns
     partial data is worse — but recorded because it is a behavior change.
+12. **`save()`'s activate is the one `{"activeProgram"}` wait in the class that is neither
+    quarantined nor on `WRITE_ACK_TIMEOUT_MS`**, unlike `activate()`'s own, so a late reply to an
+    abandoned save is fair game for the next call on that connection to misclaim. Found while
+    writing Chunk 30 and deliberately left out of it: a behaviour change, not a message.
+13. **`putSourceCode` gets the shortest ack budget for the largest write pbz makes.** Chunk 26
+    moved the small writes to 8 s; `save()`'s internal acks kept the 3 s default, and the README
+    documents that deliberately. On a GC-grinding board this is where `save` fails first. Same
+    origin as 12, same reason for keeping it separate.
 
 **Explicitly UNTESTED, don't assume otherwise:** `list()` against a device with **zero saved
 patterns**. Chunk 24 moved it from a timeout-terminated read to a flag-terminated one, and the
@@ -1324,6 +1339,70 @@ can now throw where they previously could not; their JSDoc says so.
   device but unsaved. That is post-publish item 8, whose complaint is exactly that, and it is
   cheap on top of this now that the errors reaching it are coherent.
 
+### Chunk 30 — a failed save() says what it left on the device
+
+Post-publish item 8, and cheap on top of Chunk 29 now that the errors reaching `save()` are
+coherent. `run()` and `save()` change what the wall is showing on their FIRST step and only
+finish several steps later, so a failure in between leaves the device holding something nobody
+asked for. The reported case: a zero-frame `save()` throwing about thumbnails while the pattern
+it had just started was still rendering, unsaved and absent from `pbz list`.
+
+- **Item 8's framing was too narrow, and the worse case is the one it doesn't mention.** There
+  are four failure points past the moment the wall changes, and the **pause window** is the bad
+  one: loading pauses the device, and **nothing in pbz except `run`/`save` themselves ever sends
+  `{pause:false}`**, so a user who trips it has a dark wall and no obvious verb. Item 8's own
+  case at least leaves something visibly running.
+- **The line order IS the honesty rule.** A `maybe-` state is assigned BEFORE its send (bytes on
+  the wire, nothing heard back); a bare state AFTER the device's own ack. A reviewer checks that
+  a claim is earned by looking at where the assignment sits, without reading the prose. The
+  easiest over-claim in the method is advancing past the resume before its ack, and it has its
+  own test.
+- **Never say "saved" without the `putSourceCode` ack; never say "not saved" with it.**
+  `maybe-saved` and `saved-maybe-inactive` are separated by exactly one acknowledged flash write
+  and the messages must not blur it.
+- **`run()` is in scope for the pause window only.** Its contract is already "live, not saved",
+  so the state it leaves on success is the one the caller asked for — and there is no failure
+  point after its resume anyway. Scoping it out would have meant writing the helper and then
+  declining to call it from one of its two identical call sites.
+- **Annotated in place, not re-wrapped.** `defrag()`'s precedent (Chunk 28) is prose in the
+  message, and that stays. The divergence is refusing to build a new `Error`: Chunk 29 spent a
+  whole pass making transport errors carry a real cause and a pointer at the recovery playbook,
+  and flattening those into an interpolated string would undo half of it. A test asserts the
+  transport's own text survives alongside the note.
+- **`e.device` rides along for the library half.** `{state, id}`, typed in the `.d.mts`. The
+  message stays the contract for the CLI (`die(e.message)`), but a fan-out caller
+  (`examples/fan-out.mjs`) deciding "did I leave device 3 frozen, or merely unsaved?" should not
+  be regexing prose that gets rewritten between chunks. **Its absence is part of the contract:
+  no `device` property means nothing was sent and the wall was never touched.**
+- **No message names the invoking verb**, because `import()` routes through `save()` and
+  "re-run `pbz save`" would be a lie for `pbz import`. Recovery verbs are named; the name is
+  quoted with `JSON.stringify` so an awkward one stays copy-pasteable.
+- **Live-verified on the spare (192.168.1.187), 2026-08-16, and it corrected one message.**
+  `{"pause":true}` **survives the client disconnecting** — `fps` read **0.00** five seconds
+  after the socket closed — so the frozen-wall hazard is real and `fps 0` is a true diagnostic.
+  Both printed recoveries work: `pbz activate` cleared the pause (fps back to 140.16) and so did
+  re-running (`pbz run` → 68.73). On the flash half, a `putSourceCode` acked but never activated
+  **is** listed with the active pointer unmoved, as claimed. But a genuinely truncated transfer
+  (4-chunk blob, 2 chunks sent) **left no entry at all** — the plan had predicted a possibly
+  incomplete one. So `maybe-saved` says the better, true thing: a partial transfer commits
+  nothing, therefore an entry appearing in `pbz list` means the write completed and only the ack
+  was lost. The device stayed healthy throughout and the test entries were deleted.
+- **Acceptance:** 12 new hermetic tests (10 fake-connection, 2 through the real transport in
+  their own file so the one genuine 3 s timeout overlaps other files rather than summing),
+  **204 total**, typecheck green. **Every message is asserted twice — for what it claims and for
+  what it must NOT claim** — because a state cursor one step ahead produces a plausible, wrong,
+  confident message rather than a crash. Load-bearing proof: against the pre-fix library 9 of 12
+  fail (the 3 that pass assert the ABSENCE of a note, so they pass by construction), and two
+  mutations — advancing the resume cursor before its ack, and swapping the two save-side states —
+  are each caught by exactly the test written for them.
+- **Size:** S.
+- **Deliberately NOT in scope:** the single-step writes (`activate`, `delete`, `setControls`,
+  `setConfig`), whose existing messages already describe their whole story; `defrag()`, which
+  Chunk 28 already gave this treatment; **items 12 and 13**, both found here and both recorded
+  rather than folded in; and any form of automatic rollback — a tool that unpauses or deletes on
+  your behalf after a failure is a tool that does surprising writes to a possibly-sick board.
+  **Report, don't repair.**
+
 ---
 
 ## Appendix — verified wire formats (firmware v3.67)
@@ -1399,6 +1478,12 @@ against this device, firmware v3.67): 12 bytes, three little-endian `uint32`s �
 `[packetType (42 = beacon), chipId, timestamp (ms since boot)]`. `chipId` matches
 `getConfig().chipId` exactly, confirming the field. `Pixelblaze.discover()` is `static`
 (no host — that's the point) and only listens; it never sends.
+
+**Render pause:** `{"pause":true|false}` halts and resumes the renderer. `save`/`run` have sent
+it since day one (paired with `setCode`) and this table never documented it. It **acks on its
+own**, and — verified live 2026-08-16 on the spare — **it persists after the client disconnects**:
+five seconds after closing the socket, `pbz info` still read `fps: 0.00`. Nothing else in pbz
+sends `{"pause":false}`, but both `activate` and a fresh `run`/`save` clear it as a side effect.
 
 **Binary frames (existing, in current save/run path):** `[type][flag] + ≤1280B` chunks;
 flag bit1=first, bit2=middle, bit4=last. type 1 = putSourceCode (`.pbp`), type 3 = setCode
