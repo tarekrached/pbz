@@ -34,10 +34,11 @@ const previewFrame = () => { const b = Buffer.alloc(1 + PREVIEW_W * 3); b[0] = 5
  * 'resume', 'putSourceCode', 'activate'. `throwOn` makes a SEND throw the way a
  * dead connection does since Chunk 29, before any byte leaves the machine.
  */
-function fakeConn({ suppress = [], throwOn = null, frames = 150, withholdCompletion = false, framesThrow = false } = {}) {
+function fakeConn({ suppress = [], throwOn = null, frames = 150, withholdCompletion = false, framesThrow = false, dieOnWait = 0 } = {}) {
   const held = new Set(suppress);
   const inbox = [];
   let seq = 0;
+  let waits = 0;
   const ACK = '{"ack":1}';
   // Sequenced, and mark()/waitText honour it: the watermark is the mechanism
   // the whole invariant rests on, and a fake that ignores it cannot catch a
@@ -69,6 +70,12 @@ function fakeConn({ suppress = [], throwOn = null, frames = 150, withholdComplet
       emit('putSourceCode', withholdCompletion ? ACK : '{"ack":1,"saveProgramSourceFile":true}');
     },
     async waitText(prefix, ms, after = -1) {
+      // `dieOnWait` makes the Nth wait REJECT the way a transport death does,
+      // as opposed to resolving null the way a timeout does. The difference is
+      // the whole point of the error-preservation paths.
+      if (dieOnWait && ++waits === dieOnWait) {
+        throw new Error('websocket: device at fake-host:81 closed the connection mid-exchange (code 1006) — see "Device etiquette & recovery"');
+      }
       const i = inbox.findIndex(e => e.seq > after && e.frame.startsWith(prefix));
       return i < 0 ? null : inbox.splice(i, 1)[0].frame; // null == timed out
     },
@@ -252,14 +259,15 @@ test('run: the happy path annotates nothing', async () => {
   assert.ok(res.bytecode);
 });
 
-// One guard, four operands, one table. The annotator must hand back exactly
-// what it was given whenever it cannot safely annotate: assigning a property to
-// any of these throws in strict mode, which would swap the real failure for a
-// TypeError pointing at the annotator — at the moment a caller most needs to
-// know what happened. `typeof null === 'object'` is why null needs its own
-// clause. All of these throw from INSIDE save()'s try (via `lz`, called by
-// buildPBP); an earlier version threw from compile(), which runs BEFORE the
-// try, so the annotator was never reached and the test proved nothing.
+// The annotator must hand back exactly what it was given whenever it cannot
+// safely annotate. Two mechanisms cover these four: the type guard rejects the
+// non-objects (`typeof null === 'object'` is why null needs its own clause),
+// and the assignment's own catch covers anything that refuses the property —
+// frozen here, and equally sealed or read-only-`device`. Either way the
+// original must survive: swapping it for a TypeError about the annotator is
+// the failure this exists to prevent. All of these throw from INSIDE save()'s
+// try (via `lz`, called by buildPBP); throwing from compile(), which runs
+// before the try, would not reach the annotator at all.
 for (const [label, make] of [
   ['a string', () => 'lz: bad input'],
   ['null', () => null],
@@ -434,4 +442,19 @@ test('an error with an unwritable device property is returned, not replaced', as
   try { await pb.save('src', 'Sweep'); } catch (e) { caught = e; }
   assert.equal(caught.message, 'unwritable', 'the real failure must survive');
   assert.doesNotMatch(String(caught), /TypeError/);
+});
+
+test('run: a transport death on the resume claim keeps the transport error', async () => {
+  // run()'s waits, in order: 1 setCode ack, 2 the setControls ack, 3 the
+  // resume's own ack. Number 3 is where an earlier version had `.catch(() =>
+  // null)`, which swallowed a transport death and threw a generic message in
+  // its place — discarding the device address, the close code and the recovery
+  // pointer. That fix had NO test: reintroducing the catch passed the whole
+  // suite. The existing transport-level test kills the connection while run()
+  // is still parked on wait 1, so it never reached this path.
+  const e = await failed(pbWith(fakeConn({ dieOnWait: 3 })).run('src'));
+  assert.match(e.message, /closed the connection mid-exchange \(code 1006\)/, "the transport's own error must survive");
+  assert.match(e.message, /Device etiquette & recovery/);
+  assert.doesNotMatch(e.message, /did not acknowledge both resume commands/, 'the generic message is for a TIMEOUT');
+  assert.equal(e.device.state, 'maybe-paused');
 });

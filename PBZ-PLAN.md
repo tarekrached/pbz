@@ -1431,8 +1431,15 @@ reads `fps 0.00` exactly as `maybe-paused` claims.
   constant, so it is now pinned against a literal 1280 the way `golden-bytes` pins compiler output.
   A source-level drift guard catches a state added without a message (no runtime test can reach
   that, and an unannotated error reads as "nothing was sent").
-- **Size:** S. Five review rounds; every round found that the previous round's FIX had broken
-  something, which is recorded in the commit log rather than here.
+- **Size:** S. Six review rounds. Rounds 1-2 found the feature's real defects; rounds 4 and 5
+  each spent their headline finding on a regression the previous round's fix had introduced, and
+  round 6's one genuine new defect came from putting it on real hardware rather than from reading
+  it again. A convergence pass over every line touched more than once found `alive()` CONVERGED
+  (both competing justifications hold) but `withDeviceState` OSCILLATING: the `device` assignment
+  moved into a try, out of it, and back in over three rounds, because the guard clause and the
+  catch were two spellings of one predicate and whichever ran second was unreachable. It is one
+  predicate now. Two other defences were provably inert and are gone — a separate `isDead` flag
+  that `death !== null` makes structural, and an `isExtensible` clause the catch already covered.
 - **Deliberately NOT in scope:** the single-step writes, whose messages already tell the whole
   story; `defrag()`, which Chunk 28 already gave this treatment; items 12-17, all found here and
   all recorded rather than folded in; and any form of automatic rollback — a tool that unpauses or
