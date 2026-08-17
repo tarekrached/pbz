@@ -355,7 +355,7 @@ test('a send refuses on a socket that closed but has not fired its event yet', a
   const { c, ws } = fakeConnect(5000);
   await c.opened;
   ws.readyState = 3; // closed underneath us, no event yet
-  assert.throws(() => c.json({ ping: true }), /no longer open/);
+  assert.throws(() => c.json({ ping: true }), /no longer open \(readyState 3\)/);
   assert.throws(() => c.sendBytecode(Buffer.from([1, 2, 3])), /no longer open/);
   assert.equal(ws.sent.length, 0, 'and nothing was handed to a socket that would have dropped it');
 });
@@ -407,5 +407,24 @@ test('the on-wire chunk size is 1280 bytes, asserted against a literal', () => {
     assert.equal(ws.sent[2].length, 2 + 5, 'the last frame carries the remainder');
     assert.equal(ws.sent[0][1] & 1, 1, 'first frame carries the first-chunk flag');
     assert.equal(ws.sent[2][1] & 4, 4, 'last frame carries the last-chunk flag');
+    c.close(); // or its idle timer holds the event loop open for the full 5s
   })();
+});
+
+test('a refused send does not preempt the close code that is already on its way', async () => {
+  // The window this guards is the one no test was driving: readyState flips
+  // when the peer's close frame is processed, the `close` event lands a task
+  // later, and a send in between refuses. If that refusal claims the cause,
+  // first-cause-wins makes the generic sentence permanently replace the real
+  // `(code 1006)` — for the thrower and for every parked waiter. That code is
+  // the one bit separating a device that dropped from a clean hangup, which is
+  // this project's documented top hazard.
+  const { c, ws } = fakeConnect(5000);
+  await c.opened;
+  const parked = c.waitText('{"ack"', 3000, c.mark());
+  ws.readyState = 3;                                     // closed; event not dispatched yet
+  assert.throws(() => c.json({ ping: true }), /no longer open/);
+  ws.onclose?.({ code: 1006 });                          // the real cause, arriving a task later
+  await assert.rejects(parked, /code 1006/, 'the parked waiter must get the close code, not the refusal');
+  assert.match(c.dead().message, /code 1006/, 'and so must anything asking afterwards');
 });

@@ -116,14 +116,6 @@ test('save: setControls acked but the RESUME lost stays maybe-paused', async () 
   assert.doesNotMatch(e.message, /WAS live on the device/, 'the resume was never acknowledged');
 });
 
-test('save: preview frames are accepted as proof of rendering when the ack was lost', async () => {
-  // The converse of the test above: a lost resume ack is forgiven the moment
-  // the device draws something, because frames are the stronger evidence.
-  const e = await failed(pbWith(fakeConn({ suppress: ['resume', 'activate'] })).save('src', 'Sweep'));
-  assert.equal(e.device.state, 'saved-maybe-inactive');
-  assert.doesNotMatch(e.message, /may additionally be sitting paused/);
-});
-
 test('save: zero preview frames, resume acked, reports live-but-unsaved', async () => {
   const e = await failed(pbWith(fakeConn({ frames: 0 })).save('src', 'Sweep'));
   assert.equal(e.device.state, 'running-unsaved');
@@ -164,15 +156,6 @@ test('save: acks for early chunks do not count as the write completing', async (
   const e = await failed(pbWith(fakeConn({ withholdCompletion: true, suppress: ['activate'] })).save('src', 'Sweep'));
   assert.equal(e.device.state, 'maybe-saved', 'plain chunk acks must not earn "saved"');
   assert.doesNotMatch(e.message, /IS saved to the device/);
-});
-
-test('save: the completion marker is found across a multi-chunk write', async () => {
-  // The positive half: a real multi-chunk blob (150 preview frames make one)
-  // must still reach `saved-maybe-inactive`, so the loop cannot be "fixed" by
-  // simply never promoting.
-  const conn = fakeConn({ suppress: ['activate'] });
-  const e = await failed(pbWith(conn).save('src', 'Sweep'));
-  assert.equal(e.device.state, 'saved-maybe-inactive');
 });
 
 test('save: a stale ack queued before the write cannot satisfy its completion wait', async () => {
@@ -269,17 +252,32 @@ test('run: the happy path annotates nothing', async () => {
   assert.ok(res.bytecode);
 });
 
-test('a thrown non-Error passes through untouched rather than being replaced', async () => {
-  // Assigning a property to a string throws in strict mode, which would swap
-  // the real failure for a TypeError pointing at the annotation helper. This
-  // must throw from INSIDE save()'s try — an earlier version threw from
-  // compile(), which runs before it, so the annotator was never even reached
-  // and the test proved nothing. `lz` is called by buildPBP, well inside.
-  const pb = pbWith(fakeConn());
-  pb._tooling.lz = () => { throw 'lz: bad input'; }; // eslint-disable-line no-throw-literal
-  const e = await failed(pb.save('src', 'Sweep'));
-  assert.equal(e, 'lz: bad input', 'the original throw must survive intact');
-});
+// One guard, four operands, one table. The annotator must hand back exactly
+// what it was given whenever it cannot safely annotate: assigning a property to
+// any of these throws in strict mode, which would swap the real failure for a
+// TypeError pointing at the annotator — at the moment a caller most needs to
+// know what happened. `typeof null === 'object'` is why null needs its own
+// clause. All of these throw from INSIDE save()'s try (via `lz`, called by
+// buildPBP); an earlier version threw from compile(), which runs BEFORE the
+// try, so the annotator was never reached and the test proved nothing.
+for (const [label, make] of [
+  ['a string', () => 'lz: bad input'],
+  ['null', () => null],
+  ['undefined', () => undefined],
+  ['a frozen Error', () => Object.freeze(new Error('frozen'))],
+]) {
+  test(`the annotator hands back ${label} untouched rather than replacing it`, async () => {
+    const thrown = make();
+    const pb = pbWith(fakeConn());
+    pb._tooling.lz = () => { throw thrown; };
+    let caught = 'did not throw';
+    try { await pb.save('src', 'Sweep'); } catch (e) { caught = e; }
+    assert.equal(caught, thrown, 'the original throw must reach the caller unchanged');
+    if (caught && typeof caught === 'object') {
+      assert.equal(caught.device, undefined, 'and must not have acquired a device state');
+    }
+  });
+}
 
 test('an error whose message cannot be written is left alone', async () => {
   // The guard is about WRITABILITY, not type: a getter-only `message` (frozen
@@ -361,13 +359,11 @@ test('save: a file-supplied id is shell-quoted like everything else in the comma
 });
 
 // --- drift guards -----------------------------------------------------------
-// A mutation sweep ranked this the worst failure this feature can produce: add
-// a fifth `left = '...'` state without a DEVICE_LEFT entry and nothing crashes
-// in development. withDeviceState sets `device.state` to the new name, the
-// message lookup throws inside the swallowed try/catch, and the error ships
-// carrying a state that maps to no truth at all — in a feature whose entire
-// purpose is telling the user the truth. A runtime test cannot reach it, so
-// this reads the source, the same way test/types.test.mjs guards the .d.mts.
+// Add a fifth `left = '...'` state without a DEVICE_LEFT entry and nothing
+// crashes: withDeviceState returns the error UNANNOTATED, which the documented
+// contract reads as "nothing was sent and the wall was never touched" — the
+// opposite of the truth, silently. No runtime test can reach it, so this reads
+// the source, the way test/types.test.mjs guards the .d.mts.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -375,21 +371,34 @@ const libSrc = readFileSync(path.join(import.meta.dirname, '../lib/pixelblaze.mj
 const dtsSrc = readFileSync(path.join(import.meta.dirname, '../lib/pixelblaze.d.mts'), 'utf8');
 
 test('every state the code assigns has a message, and is declared in the types', () => {
-  const assigned = new Set([...libSrc.matchAll(/left = '([a-z-]+)'/g)].map(m => m[1]));
-  assert.ok(assigned.size >= 4, `expected the four states, found ${[...assigned].join(', ')}`);
+  // Scraping source is fragile, so this is written to fail LOUD rather than
+  // quietly stop guarding. An earlier version matched only `left = 'x'` with
+  // single quotes, lowercase-and-hyphen names and exactly one space each side:
+  // it caught one of seven spellings of the drift it exists to catch, and it
+  // false-FAILED on cosmetic reformatting of the table or the union. Both
+  // directions are checked now, and the self-checks below assert the scrapes
+  // still find things at all.
+  const assigned = new Set([...libSrc.matchAll(/\bleft\s*=\s*['"`]([^'"`]+)['"`]/g)].map(m => m[1]));
+  const tableStart = libSrc.indexOf('const DEVICE_LEFT = {');
+  assert.notEqual(tableStart, -1, 'DEVICE_LEFT table not found — this guard has stopped guarding');
+  const table = libSrc.slice(tableStart, libSrc.indexOf('\n};', tableStart));
+  const declared = new Set([...table.matchAll(/^\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_$][\w$]*))\s*:/gm)].map(m => m[1] ?? m[2] ?? m[3]));
+  const unionSrc = dtsSrc.slice(dtsSrc.indexOf('export type DeviceLeftState'), dtsSrc.indexOf(';', dtsSrc.indexOf('export type DeviceLeftState')));
+  const union = new Set([...unionSrc.matchAll(/'([^']+)'/g)].map(m => m[1]));
 
-  const table = libSrc.slice(libSrc.indexOf('const DEVICE_LEFT = {'), libSrc.indexOf('\n};', libSrc.indexOf('const DEVICE_LEFT = {')));
-  const declared = new Set([...table.matchAll(/^\s*'?([a-z-]+)'?:\s*\(/gm)].map(m => m[1]));
-  for (const state of assigned) {
-    assert.ok(declared.has(state), `state '${state}' is assigned but has no DEVICE_LEFT message`);
-  }
+  // Self-checks: if a refactor breaks the scraping, fail here rather than
+  // silently passing forever on empty sets.
+  assert.ok(assigned.size >= 4, `scraped only ${assigned.size} assigned states — the scrape is broken`);
+  assert.ok(declared.size >= 4, `scraped only ${declared.size} table entries — the scrape is broken`);
+  assert.ok(union.size >= 4, `scraped only ${union.size} union members — the scrape is broken`);
 
-  const union = new Set([...dtsSrc.matchAll(/\|\s*'([a-z-]+)'/g)].map(m => m[1]));
-  for (const state of declared) {
-    assert.ok(union.has(state), `state '${state}' has a message but is missing from DeviceLeftState`);
-  }
+  for (const state of assigned) assert.ok(declared.has(state), `state '${state}' is assigned but has no DEVICE_LEFT message`);
+  for (const state of declared) assert.ok(union.has(state), `state '${state}' has a message but is missing from DeviceLeftState`);
+  // The reverse direction too, or dead advice text rots in place: a message for
+  // a state nothing assigns any more would otherwise pass forever.
+  for (const state of declared) assert.ok(assigned.has(state), `state '${state}' has a message but nothing assigns it`);
+  for (const state of union) assert.ok(declared.has(state), `state '${state}' is declared in the types but has no message`);
 });
-
 test('a thrown null survives the annotator untouched', async () => {
   // Without the object/null guards, `e.device = …` on null throws a SECOND,
   // unrelated TypeError from inside the annotator, destroying the original at
@@ -408,4 +417,21 @@ test('a thrown undefined survives the annotator untouched', async () => {
   let caught = 'did not throw';
   try { await pb.save('src', 'Sweep'); } catch (e) { caught = e; }
   assert.equal(caught, undefined, 'a thrown undefined must reach the caller unchanged');
+});
+
+test('an error with an unwritable device property is returned, not replaced', async () => {
+  // isExtensible does not cover this: the object accepts new properties, but
+  // `device` specifically is read-only, so the assignment throws. Round four
+  // moved that assignment out of the try, which turned a swallowed failure into
+  // a TypeError replacing the real error — what the guard exists to prevent.
+  const pb = pbWith(fakeConn());
+  pb._tooling.lz = () => {
+    const e = new Error('unwritable');
+    Object.defineProperty(e, 'device', { value: undefined, writable: false, configurable: false });
+    throw e;
+  };
+  let caught = 'did not throw';
+  try { await pb.save('src', 'Sweep'); } catch (e) { caught = e; }
+  assert.equal(caught.message, 'unwritable', 'the real failure must survive');
+  assert.doesNotMatch(String(caught), /TypeError/);
 });

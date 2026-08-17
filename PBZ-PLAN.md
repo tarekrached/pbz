@@ -912,8 +912,8 @@ the fix surface before a first release:
     `samplePreview()` purges type-5 frames and stops the preview stream mid-collection. A
     concurrent read can therefore make a write report a failure that did not happen — a
     `getConfig()` overlapping a save was reproduced making the save report
-    `saved-maybe-inactive` for an activation that succeeded. Only `getStatus()` and `list()` are
-    genuinely disjoint. The class header now says so; making them actually safe needs request
+    `saved-maybe-inactive` for an activation that succeeded. The reads that claim neither an ack nor an
+    `{"activeProgram"` frame are safe alongside a write; see the class header for the list. The class header now says so; making them actually safe needs request
     correlation the protocol does not offer.
 16. **`close()` does not cancel an in-flight open.** It clears `_conn` but not `_connecting`, so
     an open that resolves after a `close()` reassigns `this._conn`, leaving a live socket nobody
@@ -1374,135 +1374,64 @@ can now throw where they previously could not; their JSDoc says so.
 ### Chunk 30 — a failed save() says what it left on the device
 
 Post-publish item 8, and cheap on top of Chunk 29 now that the errors reaching `save()` are
-coherent. `run()` and `save()` change what the wall is showing on their FIRST step and only
-finish several steps later, so a failure in between leaves the device holding something nobody
-asked for. The reported case: a zero-frame `save()` throwing about thumbnails while the pattern
-it had just started was still rendering, unsaved and absent from `pbz list`.
+coherent. `run()` and `save()` change what the wall is showing on their FIRST step and only finish
+several steps later, so a failure in between leaves the device holding something nobody asked for.
+The reported case: a zero-frame `save()` throwing about thumbnails while the pattern it had just
+started was still rendering, unsaved and absent from `pbz list`.
 
-- **Item 8's framing was too narrow, and the worse case is the one it doesn't mention.** There
-  are four failure points past the moment the wall changes, and the **pause window** is the bad
-  one: loading pauses the device, and **nothing in pbz except `run`/`save` themselves ever sends
-  `{pause:false}`**, so a user who trips it has a dark wall and no obvious verb. Item 8's own
-  case at least leaves something visibly running.
-- **The line order IS the honesty rule.** A `maybe-` state is assigned AFTER its send returns
-  (the sends are synchronous and throw on a dead connection before a byte moves, so returning
-  means the bytes are on the socket) and a bare state AFTER the device's own ack. A reviewer
-  checks that a claim is earned by looking at where the assignment sits.
-- **The first cut got its own rule wrong, and review caught it.** `{setControls:{}}` and
-  `{pause:false}` go out together and **each acks independently** (verified live: acks at 22 ms
-  and 44 ms). The queue hands back the oldest match, so `expectAck(…, 'save: resume')` claims
-  *setControls'* ack, not the resume's. Advancing to `running-unsaved` there asserted the wall
-  was rendering on evidence that said nothing about the pause — and made item 8's own zero-frame
-  error answer its "Is the pattern rendering?" with a confident yes over a frozen wall. The
-  resume's own ack is the NEXT one.
-- **Preview frames are better evidence than the ack**, and that is measured, not assumed: a
-  rendering device returned 10 frames at once while a **paused** one returned 0 in 4 s, so the
-  inference holds in both directions. A lost resume ack is forgiven the moment the device draws. A useful
-  consequence: **no save-side state can coexist with an unconfirmed resume**, because every one
-  of them is downstream of the frames. A combined "paused and saved" state cannot occur, and a
-  test pins that so nobody adds one.
-- **`putSourceCode`'s completion is the LAST ack, not the first.** The device acks **every**
-  binary frame and only the final one carries `saveProgramSourceFile` (verified live on a
-  4-chunk write: plain acks at 41/67/94 ms, marked at 126 ms). Claiming the first advanced the
-  cursor on chunk 1 of N, so on a board slow enough for it to matter we would have reported a
-  completed flash write while the transfer was still in flight. `CHUNK_BYTES` is now exported
-  from `protocol.mjs` so the ack count is derived rather than duplicated. **Only the first ack is
-  required**; the rest are best-effort, because a firmware sending fewer acks than chunks must
-  leave us under-claiming rather than turning a write that landed into a hard failure.
-- **Never say "saved" without the completion ack; never say "not saved" with it.**
-- **`run()` is in scope for the pause window only,** and it no longer returns success on a lost
-  resume: `pbz run` printed "ok (live, not saved)" over a frozen wall, which is the same false
-  success Chunk 24 existed to remove. The generic "did not acknowledge both resume commands"
-  message is reserved for a genuine TIMEOUT — a transport death keeps protocol.mjs's own error,
-  since replacing it would undo Chunk 29 on this path, and `pbz power <pattern>` runs through
-  here too, not just `pbz run`.
-- **Annotated in place, not re-wrapped.** `defrag()`'s precedent (Chunk 28) is prose in the
-  message, and that stays. The divergence is refusing to build a new `Error`: Chunk 29 spent a
-  whole pass making transport errors carry a real cause and a recovery pointer, and flattening
-  those into a string would undo half of it. A test asserts the transport's own text survives
-  alongside the note. The helper also refuses to annotate a non-object or a non-string `message`,
-  because assigning a property to a thrown string throws in strict mode and would replace the
-  real failure with a TypeError pointing at the annotation helper.
-- **The transport stopped sharing one Error instance.** `protocol.mjs` recorded a single `dead`
-  object and handed it to every throw and every rejection. Chunk 29's review called that
-  cosmetic "unless something attaches per-call context"; this chunk is that something, and a
-  concurrent read — explicitly supported on one instance — picked up a save's annotation.
-  `queue.fail` now takes a factory and every rejection gets its own instance.
-- **`e.device` rides along for the library half.** `{state, id}`, typed in the `.d.mts`. The
-  message stays the contract for the CLI (`die(e.message)`), but a fan-out caller should not be
-  regexing prose. **Its absence is part of the contract: no `device` property means nothing was
-  sent and the wall was never touched.**
-- **No message names the invoking verb**, because `import()` routes through `save()`. Recovery
-  verbs are named, and the pattern name is **shell**-quoted, not JSON-quoted: this text gets
-  pasted into a shell, where a name containing a backtick in JSON quotes would EXECUTE.
-- **Reading the real CLI output changed two things no code review had.** A reviewer induced
-  genuine mid-save deaths on the spare and read what a user sees. First, `running-unsaved` said
-  the pattern "IS live on the device" while the transport error it appends to says "it may have
-  rebooted" — a reboot falsifies that in the same breath as suggesting it, so the claim is past
-  tense now. Second, every failure printed as one 350-580 character run-on, because the progress
-  line is written without a newline and the error glued onto it, burying "error:" mid-line across
-  several wrapped rows; the CLI now closes an open progress line first.
-- **A fourth round found that the third round's own fix broke a healthy path**, which is the
-  pattern this chunk kept repeating. Making `alive()` refuse on a closed-but-unannounced socket
-  was right, but `collectFrames`' teardown send was guarded only on `isDead`, so it began throwing
-  AFTER a complete frame set was already in hand — destroying the "a complete set survives the
-  drop" property Chunk 29 built, breaking `samplePreview()` (and so `pbz power`) as a pure read,
-  and making `save()` report a frozen wall on a device that had just delivered every frame asked
-  of it. The teardown is best-effort by its own comment and is now written that way.
-- **Every recovery command carries `--host` and targets the id.** Without the host, advice
-  printed during a `pbz save --host=<spare>` failure would run against whatever the config
-  resolves to — changing the actual wall, which is the precise class of unrequested device change
-  this chunk exists to prevent. `defrag` already had the right pattern. The id rather than the
-  name because `_resolveTarget` takes the first name match — not hypothetical: the spare has two
-  patterns both named "Newfire", and activating by name silently takes the first. **Both the host
-  and the id are shell-quoted**, because `import()` passes the `.epe`'s OWN id through as
-  `opts.id`, so a hostile file could otherwise have put a backtick into a command a user pastes.
-  Verified end to end on the spare: a real `saved-maybe-inactive` failure was induced, the printed
-  command copied out of the error verbatim, and it worked — as did both halves of `maybe-paused`'s
-  advice (re-run → 60.76 fps, activate → 140.00 fps), with `pbz info` reading `fps 0.00` exactly
-  as that message claims.
-- **Live-verified on the spare (192.168.1.187), 2026-08-16, twice — and hardware overturned two
-  messages.** Confirmed: `{"pause":true}` survives the client disconnecting (`fps` reads **0.00**
-  five seconds after close), so the frozen-wall hazard is real and `fps 0` is a true diagnostic;
-  both printed recoveries work (`pbz activate` → 140.16, re-running → 76.69); **`pbz seq resume`
-  does NOT clear a render pause** (it toggles `runSequencer`, the playlist auto-advance), so
-  naming only run/activate is complete rather than lazy; and a genuinely truncated
-  `putSourceCode` (15-chunk valid payload, final chunk withheld) **commits nothing**.
-  **Overturned:** an acked-but-unactivated save does NOT leave the device reverting to the
-  previously active pattern on reboot — reproduced three times, the boot pointer follows the most
-  recently **saved** pattern, and a later `activate` of something else does not stick. Both
-  messages that leaned on the intuitive behaviour were rewritten to the measured one.
-- **Acceptance:** 42 new hermetic tests, **234 total**, typecheck green. **Every message is
-  asserted twice — for what it claims and for what it must NOT claim** — because a state cursor
-  one step ahead produces a plausible, wrong, confident message rather than a crash. Load-bearing
-  proof: against the pre-fix library the new tests fail (the handful that pass assert the ABSENCE
-  of a note, so they pass by construction); mutations that advance the resume cursor before its
-  ack, that swap the two save-side states, that restore the shared Error instance, that collapse
-  the completion-ack loop back to a single claim, and that drop the watermark from that loop are
-  each caught by exactly the test written for them. **A dedicated mutation sweep** (40 mutants,
-  4 provably equivalent) then put a number on it: **27/36 killed, 75%**, and its survivors were
-  worth more than the score. The most dangerous was `CHUNK_BYTES`: changing the wire constant
-  passed the entire suite, because the test fake IMPORTS the same constant to decide how many
-  acks to emit, so the tests stayed self-consistent with whatever the code said while every real
-  write to hardware would have sent frames the firmware does not expect. It is now pinned against
-  a literal 1280, the way `golden-bytes` pins compiler output. Also closed: a `left = '<state>'`
-  with no `DEVICE_LEFT` entry (a source-level drift guard, since no runtime test can reach it —
-  a state that maps to no message is the worst thing a feature about telling the truth can ship),
-  a thrown `null`/`undefined` reaching the annotator, and `failure()` handing back its factory
-  instead of an Error. The test fake was rewritten twice for this:
-  it now acks per COMMAND, derives its chunk acks from the real payload, and honours the
-  watermark — three fidelity gaps that each let a real defect through. A third round then found
-  five surviving mutants and two **vacuous** tests: the non-Error test threw from `compile()`,
-  which runs OUTSIDE the try, so the annotator was never reached; and the frames-are-proof test
-  asserted at a point where later assignments had already overwritten the promotion, so deleting
-  it left the suite green. Both are now written to the scenario that actually observes them.
-- **Size:** S.
-- **Deliberately NOT in scope:** the single-step writes (`activate`, `delete`, `setControls`,
-  `setConfig`), whose existing messages already describe their whole story; `defrag()`, which
-  Chunk 28 already gave this treatment; **items 12 and 13**, both found here and both recorded
-  rather than folded in; and any form of automatic rollback — a tool that unpauses or deletes on
-  your behalf after a failure is a tool that does surprising writes to a possibly-sick board.
+**Item 8's framing was too narrow.** There are four failure points past the moment the wall
+changes, and the **pause window** is the worst: loading pauses the device, and nothing in pbz
+except `run`/`save`/`activate` resumes it, so a user who trips it has a dark wall and no obvious
+verb. Item 8's own case at least leaves something visibly running. `run()` has the same window and
+is fixed with it.
+
+- **The invariant, in one line:** an error from `run()`/`save()` never claims more than the
+  evidence in hand at the line where the claim was assigned, and the ABSENCE of a claim means
+  nothing was sent. `maybe-` states are assigned after their send returns; bare states after the
+  device's own ack. A reviewer checks a claim by where the assignment sits.
+- **Four states:** `maybe-paused`, `running-unsaved`, `maybe-saved`, `saved-maybe-inactive`.
+  Never say "saved" without the completion ack; never say "not saved" with it. A combined
+  "paused and saved" cannot occur, because every save-side state is downstream of the preview
+  frames and frames prove the renderer is running.
+- **Annotated in place, not re-wrapped**, so Chunk 29's transport errors keep their cause, close
+  code and recovery pointer. `e.device = {state, id}` rides along for library callers; the message
+  stays the contract for the CLI. No message names the invoking verb, because `import()` routes
+  through `save()`. Host and id are shell-quoted: the id can come from a `.epe` FILE.
+- **Every recovery command carries `--host`** and targets the id, not the name. Without the host
+  it runs against whatever the config resolves to, so advice printed during a `--host=<spare>`
+  failure would change the actual wall. The id because `_resolveTarget` takes the first NAME
+  match, and the spare really does have two patterns called "Newfire".
+
+**Verified against the hardware, and it corrected five things I had written from intuition:**
+
+| Claim | Reality |
+|---|---|
+| a paused device resumes on its own | **No.** `{"pause":true}` survives the client disconnecting; `fps` reads 0.00 five seconds later |
+| `pbz seq resume` clears a render pause | **No.** It toggles `runSequencer`, the playlist auto-advance |
+| an unactivated save reverts on reboot | **Backwards.** The boot pointer follows the most recently SAVED pattern, and a later `activate` does not stick |
+| a truncated `putSourceCode` leaves a damaged entry | **No.** It commits nothing (15-chunk payload, final chunk withheld) |
+| the two resume commands share one ack | **No.** Each acks independently (22ms, 44ms), and `putSourceCode` acks EVERY frame with only the last carrying `saveProgramSourceFile` (41/67/94ms plain, 126ms marked) |
+
+Frames really do prove rendering: a rendering device returned 10 at once, a paused one returned 0
+in 4s. Both printed recoveries work (`activate` → 140.16 fps, re-running → 76.69), and `pbz info`
+reads `fps 0.00` exactly as `maybe-paused` claims.
+
+- **Acceptance:** 43 new hermetic tests, **237 total**, typecheck green. Every message is asserted
+  twice — for what it claims and for what it must NOT claim — because a state cursor one step ahead
+  produces a plausible, confident, WRONG message rather than a crash. A 40-mutant sweep scored the
+  suite at 27/36 (75%) and its survivors were worth more than the number: `CHUNK_BYTES` could be
+  changed to any value with the whole suite still green, because the test fake imports the same
+  constant, so it is now pinned against a literal 1280 the way `golden-bytes` pins compiler output.
+  A source-level drift guard catches a state added without a message (no runtime test can reach
+  that, and an unannotated error reads as "nothing was sent").
+- **Size:** S. Five review rounds; every round found that the previous round's FIX had broken
+  something, which is recorded in the commit log rather than here.
+- **Deliberately NOT in scope:** the single-step writes, whose messages already tell the whole
+  story; `defrag()`, which Chunk 28 already gave this treatment; items 12-17, all found here and
+  all recorded rather than folded in; and any form of automatic rollback — a tool that unpauses or
+  deletes on your behalf after a failure does surprising writes to a possibly-sick board.
   **Report, don't repair.**
+
 
 ---
 

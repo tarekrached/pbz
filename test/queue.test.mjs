@@ -199,14 +199,10 @@ test('fail() rejects an Error where a factory is required, loudly', async () => 
 });
 
 test('fail() is idempotent by the ERROR a waiter receives, not by factory identity', async () => {
-  // The earlier version of this test compared the stored factory, which a
-  // late-binding closure passes while quietly emitting the second cause.
-  const q = makeQueues();
-  let cause = 'ECONNRESET';
-  q.fail(() => new Error(cause));   // a factory that reads a mutable reason
-  cause = 'generic close';          // ...which a later cause would change
-  await assert.rejects(q.waitText('{"ack"', 100, q.mark()), /generic close/,
-    'documents the late-binding hazard: protocol.mjs must not let the reason change');
+  // Comparing the stored factory would pass for a late-binding closure that
+  // quietly emits the second cause, so assert on what a waiter actually gets.
+  // (protocol.mjs's write-once `isDead` is what enforces the discipline; its
+  // comment is where that hazard is documented.)
   const q2 = makeQueues();
   q2.fail(() => new Error('first'));
   q2.fail(() => new Error('second'));

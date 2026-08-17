@@ -35,10 +35,9 @@ export interface PatternRow {
  *   the same entry, so retrying is safe. Its presence in `list()` proves
  *   nothing either way: `stableId` means an earlier save of the same file is
  *   already listed under that name.
- * - `saved-maybe-inactive` — on flash for certain; the activation was not
- *   confirmed. Verified on v3.67: a reboot boots whichever pattern was saved
- *   most recently rather than whichever was active, so this one is likely to
- *   come back as the default. It does NOT revert to the previous pattern.
+ * - `saved-maybe-inactive` — on flash for certain, activation unconfirmed. On
+ *   v3.67 a reboot boots whichever pattern was saved most recently, not
+ *   whichever was active, so this one likely comes back as the default.
  */
 export type DeviceLeftState =
   | 'maybe-paused'
