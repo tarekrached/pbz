@@ -14,10 +14,11 @@ class FakeWS {
     this.url = url;
     this.sent = [];
     this.closed = false;
-    queueMicrotask(() => this.onopen?.());
+    this.readyState = 0 /* CONNECTING */;
+    queueMicrotask(() => { this.readyState = 1 /* OPEN */; this.onopen?.(); });
   }
   send(data) { this.sent.push(data); }
-  close() { this.closed = true; this.onclose?.(); }
+  close() { this.readyState = 3 /* CLOSED */; this.closed = true; this.onclose?.(); }
   /** Simulate an inbound frame from the device. */
   deliver(data) { this.onmessage?.({ data }); }
 }
@@ -25,9 +26,9 @@ class FakeWS {
 // Never auto-opens (unlike FakeWS) — lets a test drive onerror/timeout
 // itself to exercise the failed-open cleanup path.
 class NeverOpensWS {
-  constructor(url) { this.url = url; this.sent = []; this.closed = false; }
+  constructor(url) { this.url = url; this.sent = []; this.closed = false; this.readyState = 0; }
   send(data) { this.sent.push(data); }
-  close() { this.closed = true; this.onclose?.(); }
+  close() { this.readyState = 3; this.closed = true; this.onclose?.(); }
 }
 
 function fakeConnect(idleMs) {
@@ -342,4 +343,19 @@ test('an Error with an empty message still kills the connection for good', async
   ws.onclose?.({ code: 1006 }); // a second, later cause
   assert.equal(c.dead().message, first, 'first cause must still win');
   assert.throws(() => c.json({ ping: true }), /./, 'and sends must still refuse');
+});
+
+test('a send refuses on a socket that closed but has not fired its event yet', async () => {
+  // A real socket flips readyState when it processes the peer's close frame and
+  // dispatches `close` a task later. In that window nothing has told us the
+  // connection died, and send() on a closed socket DISCARDS SILENTLY rather
+  // than throwing — so a caller treating "the send returned" as proof the bytes
+  // left the machine (pixelblaze.mjs's state cursor does exactly that) would be
+  // told a write may have landed when nothing was transmitted.
+  const { c, ws } = fakeConnect(5000);
+  await c.opened;
+  ws.readyState = 3; // closed underneath us, no event yet
+  assert.throws(() => c.json({ ping: true }), /no longer open \(readyState 3\)/);
+  assert.throws(() => c.sendBytecode(Buffer.from([1, 2, 3])), /no longer open/);
+  assert.equal(ws.sent.length, 0, 'and nothing was handed to a socket that would have dropped it');
 });

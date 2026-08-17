@@ -100,7 +100,7 @@ test('save: a withheld setCode ack reports only that the device MAY be paused', 
   assert.match(e.message, /may be sitting frozen/);
   assert.match(e.message, /fps 0/, 'the note must give a way to check');
   assert.doesNotMatch(e.message, /IS saved/, 'nothing was written and nothing may say so');
-  assert.doesNotMatch(e.message, /`pbz list`/, 'that is the maybe-saved advice, not this state');
+  assert.doesNotMatch(e.message, /pbz list/, 'that is the maybe-saved advice, not this state');
   assert.doesNotMatch(e.message, /WAS live/, 'the resume never happened');
 });
 
@@ -128,8 +128,8 @@ test('save: zero preview frames, resume acked, reports live-but-unsaved', async 
   const e = await failed(pbWith(fakeConn({ frames: 0 })).save('src', 'Sweep'));
   assert.equal(e.device.state, 'running-unsaved');
   assert.match(e.message, /no preview frames/, 'the original error must survive intact');
-  assert.match(e.message, /WAS live on the device/, 'past tense: a reboot may already have ended it');
-  assert.match(e.message, /absent from `pbz list`/);
+  assert.match(e.message, /WAS live on the device \(it was confirmed rendering\)/, 'past tense, and it must not name WHICH evidence');
+  assert.match(e.message, /absent from `pbz list --host=fake-host`/, 'the host must travel with every command it names');
   assert.doesNotMatch(e.message, /may be sitting frozen/, 'the resume WAS acked here');
 });
 
@@ -199,20 +199,21 @@ test('save: a withheld activate reports it IS saved, with the true reboot behavi
   // SAVED pattern, so the intuitive "reverts to the previous one" is backwards.
   assert.match(e.message, /boots whichever pattern was saved most recently/);
   assert.doesNotMatch(e.message, /revert to the previously active/, 'that claim is false on this firmware');
-  assert.match(e.message, /`pbz activate 'Sweep'` settles it/);
+  assert.match(e.message, /`pbz activate --host=fake-host [A-Za-z0-9]+` settles it/, 'the command must carry the host and target the id');
+  assert.doesNotMatch(e.message, /`pbz activate 'Sweep'`/, 'the bare name would hit the configured default device');
 });
 
 test('save: the recovery command is SHELL-quoted, not JSON-quoted', async () => {
   // JSON quoting leaves backticks and $ live for the shell, and this string is
   // written to be pasted into one.
   const e = await failed(pbWith(fakeConn({ suppress: ['activate'] })).save('src', 'a`reboot`$HOME'));
-  assert.match(e.message, /pbz activate 'a`reboot`\$HOME'/, 'single quotes make the shell take it literally');
-  assert.doesNotMatch(e.message, /activate "a`/, 'double quotes would let the shell run it');
+  assert.match(e.message, /'a`reboot`\$HOME'/, 'single quotes make the shell take it literally');
+  assert.doesNotMatch(e.message, /"a`/, 'double quotes would let the shell run it');
 });
 
 test('save: an embedded single quote is escaped rather than breaking out', async () => {
   const e = await failed(pbWith(fakeConn({ suppress: ['activate'] })).save('src', "it's"));
-  assert.match(e.message, /pbz activate 'it'\\''s'/);
+  assert.match(e.message, /'it'\\''s'/);
 });
 
 test('save: a send that throws before anything leaves the machine claims nothing', async () => {
@@ -258,7 +259,7 @@ test('run: a lost resume ack fails loudly instead of reporting success', async (
   const e = await failed(pbWith(fakeConn({ suppress: ['resume'] })).run('src'));
   assert.ok(e, 'must not resolve');
   assert.equal(e.device.state, 'maybe-paused');
-  assert.equal(e.device.id, undefined, 'run saves nothing, so there is no id');
+  assert.ok(!('id' in e.device), 'run saves nothing, so the key must be ABSENT, not undefined');
   assert.doesNotMatch(e.message, /undefined/, 'the missing name must not leak');
   assert.doesNotMatch(e.message, /IS saved/);
 });
@@ -270,9 +271,56 @@ test('run: the happy path annotates nothing', async () => {
 
 test('a thrown non-Error passes through untouched rather than being replaced', async () => {
   // Assigning a property to a string throws in strict mode, which would swap
-  // the real failure for a TypeError pointing at the annotation helper.
+  // the real failure for a TypeError pointing at the annotation helper. This
+  // must throw from INSIDE save()'s try — an earlier version threw from
+  // compile(), which runs before it, so the annotator was never even reached
+  // and the test proved nothing. `lz` is called by buildPBP, well inside.
   const pb = pbWith(fakeConn());
-  pb.compile = async () => { throw 'lz: bad input'; }; // eslint-disable-line no-throw-literal
+  pb._tooling.lz = () => { throw 'lz: bad input'; }; // eslint-disable-line no-throw-literal
   const e = await failed(pb.save('src', 'Sweep'));
-  assert.equal(e, 'lz: bad input');
+  assert.equal(e, 'lz: bad input', 'the original throw must survive intact');
+});
+
+test('an error whose message cannot be written is left alone', async () => {
+  // The guard is about WRITABILITY, not type: a getter-only `message` (frozen
+  // errors, DOMException) takes the same strict-mode assignment failure.
+  const pb = pbWith(fakeConn());
+  pb._tooling.lz = () => {
+    const e = new Error('sealed');
+    Object.defineProperty(e, 'message', { get: () => 'sealed', configurable: false });
+    throw e;
+  };
+  const e = await failed(pb.save('src', 'Sweep'));
+  assert.equal(e.message, 'sealed', 'the real failure must not become a TypeError about this helper');
+});
+
+test('save: the frames path reaches running-unsaved even with the resume ack lost', async () => {
+  // The observable proof that frames promote. An earlier test claimed to cover
+  // this but asserted at a point where later assignments had already overwritten
+  // the promotion, so deleting it left the suite green.
+  const e = await failed(pbWith(fakeConn({ suppress: ['resume'], throwOn: 'putSourceCode' })).save('src', 'Sweep'));
+  assert.equal(e.device.state, 'running-unsaved', 'frames arrived, so the pause question is settled');
+  assert.doesNotMatch(e.message, /sitting frozen/);
+});
+
+test('run: a send that throws before anything leaves the machine claims nothing', async () => {
+  // run()'s side of the line-order rule, which was pinned only for save().
+  const e = await failed(pbWith(fakeConn({ throwOn: 'setCode' })).run('src'));
+  assert.match(e.message, /connection died/);
+  assert.equal(e.device, undefined, 'nothing was sent, so nothing may be claimed');
+});
+
+test('an error that already carries a device state is not annotated twice', async () => {
+  // The guard exists so a second annotation cannot glue one call's state onto
+  // another call's error. It was correct but untested, and an untested guard is
+  // one refactor away from being deleted as dead code.
+  const pb = pbWith(fakeConn());
+  pb._tooling.lz = () => {
+    const e = new Error('already handled');
+    e.device = { state: 'maybe-paused' };
+    throw e;
+  };
+  const e = await failed(pb.save('src', 'Sweep'));
+  assert.equal(e.device.state, 'maybe-paused', 'the first state must survive');
+  assert.doesNotMatch(e.message, /WAS live/, 'and no second note may be appended');
 });

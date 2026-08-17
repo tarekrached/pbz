@@ -896,7 +896,22 @@ the fix surface before a first release:
     what makes re-saving a file update in place — but there is no warning, and a reviewer
     exercising Chunk 30 hit it on a real device and had to restore the entry by hand. At minimum
     it deserves a note when the derived id already exists under a different name.
-14. **`putSourceCode` gets the shortest ack budget for the largest write pbz makes.** Chunk 26
+14. **A late resume ack can burn a slot in `save()`'s completion accounting.** The resume's own
+    ack is waited for with a 1 s budget and, on timeout, left in the queue. On a device
+    documented to stall for 107 s it can arrive after the `putSourceCode` mark, get claimed as
+    "chunk 1", and leave the loop one short of the completion marker — reporting `maybe-saved`
+    for a write that completed. Under-claim only, so the direction is safe. The honest fix is to
+    bound that loop by a deadline rather than a chunk count.
+15. **"Concurrent READS are fine" is broader than the truth.** `getConfig()` and `getState()`
+    each claim an `{"activeProgram"` frame, which is what `save()`/`activate()` are also waiting
+    for; `ping()` claims an `{"ack"`, which `save()`'s chunk accounting needs; and
+    `samplePreview()` purges type-5 frames and stops the preview stream mid-collection. A
+    concurrent read can therefore make a write report a failure that did not happen — a
+    `getConfig()` overlapping a save was reproduced making the save report
+    `saved-maybe-inactive` for an activation that succeeded. Only `getStatus()` and `list()` are
+    genuinely disjoint. The class header now says so; making them actually safe needs request
+    correlation the protocol does not offer.
+16. **`putSourceCode` gets the shortest ack budget for the largest write pbz makes.** Chunk 26
     moved the small writes to 8 s; `save()`'s internal acks kept the 3 s default, and the README
     documents that deliberately. On a GC-grinding board this is where `save` fails first. Same
     origin as 12, same reason for keeping it separate.
@@ -1412,6 +1427,19 @@ it had just started was still rendering, unsaved and absent from `pbz list`.
 - **No message names the invoking verb**, because `import()` routes through `save()`. Recovery
   verbs are named, and the pattern name is **shell**-quoted, not JSON-quoted: this text gets
   pasted into a shell, where a name containing a backtick in JSON quotes would EXECUTE.
+- **Reading the real CLI output changed two things no code review had.** A reviewer induced
+  genuine mid-save deaths on the spare and read what a user sees. First, `running-unsaved` said
+  the pattern "IS live on the device" while the transport error it appends to says "it may have
+  rebooted" — a reboot falsifies that in the same breath as suggesting it, so the claim is past
+  tense now. Second, every failure printed as one 350-580 character run-on, because the progress
+  line is written without a newline and the error glued onto it, burying "error:" mid-line across
+  several wrapped rows; the CLI now closes an open progress line first.
+- **Every recovery command carries `--host` and targets the id.** Without the host, advice
+  printed during a `pbz save --host=<spare>` failure would run against whatever the config
+  resolves to — changing the actual wall, which is the precise class of unrequested device change
+  this chunk exists to prevent. `defrag` already had the right pattern. The id rather than the
+  name because `_resolveTarget` takes the first name match, and because a pattern named `--yes`
+  would be swallowed by argv as a flag, which shell quoting cannot fix.
 - **Live-verified on the spare (192.168.1.187), 2026-08-16, twice — and hardware overturned two
   messages.** Confirmed: `{"pause":true}` survives the client disconnecting (`fps` reads **0.00**
   five seconds after close), so the frozen-wall hazard is real and `fps 0` is a true diagnostic;
@@ -1423,7 +1451,7 @@ it had just started was still rendering, unsaved and absent from `pbz list`.
   previously active pattern on reboot — reproduced three times, the boot pointer follows the most
   recently **saved** pattern, and a later `activate` of something else does not stick. Both
   messages that leaned on the intuitive behaviour were rewritten to the measured one.
-- **Acceptance:** 24 new hermetic tests, **216 total**, typecheck green. **Every message is
+- **Acceptance:** 32 new hermetic tests, **224 total**, typecheck green. **Every message is
   asserted twice — for what it claims and for what it must NOT claim** — because a state cursor
   one step ahead produces a plausible, wrong, confident message rather than a crash. Load-bearing
   proof: against the pre-fix library the new tests fail (the handful that pass assert the ABSENCE
@@ -1432,7 +1460,11 @@ it had just started was still rendering, unsaved and absent from `pbz list`.
   the completion-ack loop back to a single claim, and that drop the watermark from that loop are
   each caught by exactly the test written for them. The test fake was rewritten twice for this:
   it now acks per COMMAND, derives its chunk acks from the real payload, and honours the
-  watermark — three fidelity gaps that each let a real defect through.
+  watermark — three fidelity gaps that each let a real defect through. A third round then found
+  five surviving mutants and two **vacuous** tests: the non-Error test threw from `compile()`,
+  which runs OUTSIDE the try, so the annotator was never reached; and the frames-are-proof test
+  asserted at a point where later assignments had already overwritten the promotion, so deleting
+  it left the suite green. Both are now written to the scenario that actually observes them.
 - **Size:** S.
 - **Deliberately NOT in scope:** the single-step writes (`activate`, `delete`, `setControls`,
   `setConfig`), whose existing messages already describe their whole story; `defrag()`, which
