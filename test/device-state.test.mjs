@@ -23,25 +23,50 @@ import { stableId } from '../lib/pbp.mjs';
 const previewFrame = () => { const b = Buffer.alloc(1 + PREVIEW_W * 3); b[0] = 5; return b; };
 
 /**
- * `failAckAt` is the 1-based index of the ack wait that goes unanswered. In
- * save() those are, in order: 1 setCode, 2 resume, 3 the second-ack claim,
- * 4 putSourceCode. In run(): 1 setCode, 2 resume, 3 the (swallowed) claim.
- * A null return is what waitText really does on timeout, which is what makes
- * expectText throw.
+ * A device that acks PER COMMAND, which is what the real one does and what an
+ * earlier version of this fake got wrong. It counted ack WAITS instead, so
+ * "setControls acked, {pause:false} lost" — the exact shape that made the
+ * chunk's core invariant wrong — could not be expressed at all, and the test
+ * named for the honesty rule was really testing a different event.
+ *
+ * `suppress` names the acks the device withholds: 'setCode', 'setControls',
+ * 'resume', 'putSourceCode', 'activate'. `throwOn` makes a SEND throw the way a
+ * dead connection does since Chunk 29, before any byte leaves the machine.
  */
-function fakeConn({ failAckAt = null, frames = 150, failActivate = false } = {}) {
-  let acks = 0;
+function fakeConn({ suppress = [], throwOn = null, frames = 150, chunkAcks = 1, withholdCompletion = false, framesThrow = false } = {}) {
+  const held = new Set(suppress);
+  const inbox = [];
+  const ACK = '{"ack":1}';
+  const emit = (what, frame) => { if (!held.has(what)) inbox.push(frame); };
   return {
+    sent: [],
     mark: () => 0,
-    json: () => {},
-    sendBytecode: () => {},
     dead: () => null,
     close: () => {},
-    async waitText(prefix) {
-      if (prefix === '{"ack"') { acks += 1; return acks === failAckAt ? null : '{"ack":1}'; }
-      return failActivate ? null : '{"activeProgram":{"name":"Sweep","activeProgramId":"abc"}}';
+    json(msg) {
+      if (throwOn === 'setCode' && 'setCode' in msg) throw new Error('websocket: connection died');
+      if (throwOn === 'activate' && 'activeProgramId' in msg) throw new Error('websocket: connection died');
+      this.sent.push(msg);
+      if ('setCode' in msg) emit('setCode', ACK);
+      else if ('setControls' in msg) emit('setControls', ACK);
+      else if (msg.pause === false) emit('resume', ACK);
+      else if ('activeProgramId' in msg) emit('activate', '{"activeProgram":{"name":"X","activeProgramId":"abc"}}');
     },
-    async collectFrames() { return Array.from({ length: frames }, previewFrame); },
+    sendBytecode(blob, type) {
+      if (throwOn === 'putSourceCode' && type === 1) throw new Error('websocket: connection died');
+      if (type !== 1) return;
+      // One ack per frame, only the last carrying the completion marker.
+      for (let i = 0; i < chunkAcks - 1; i++) emit('putSourceCode', ACK);
+      emit('putSourceCode', withholdCompletion ? ACK : '{"ack":1,"saveProgramSourceFile":true}');
+    },
+    async waitText(prefix) {
+      const i = inbox.findIndex(f => f.startsWith(prefix));
+      return i < 0 ? null : inbox.splice(i, 1)[0]; // null == timed out, as the real one does
+    },
+    async collectFrames() {
+      if (framesThrow) throw new Error('websocket: connection died');
+      return Array.from({ length: frames }, previewFrame);
+    },
   };
 }
 
@@ -60,68 +85,120 @@ function pbWith(conn, { compileThrows = false } = {}) {
 
 const failed = (p) => p.then(() => null, (e) => e);
 
-test('save: a failed setCode ack reports only that the device MAY be paused', async () => {
-  const e = await failed(pbWith(fakeConn({ failAckAt: 1 })).save('src', 'Sweep'));
+test('save: a withheld setCode ack reports only that the device MAY be paused', async () => {
+  const e = await failed(pbWith(fakeConn({ suppress: ['setCode'] })).save('src', 'Sweep'));
   assert.equal(e.device.state, 'maybe-paused');
   assert.match(e.message, /may be sitting frozen/);
   assert.match(e.message, /fps 0/, 'the note must give a way to check');
-  // NOT /saved/i: the recovery text legitimately says `a saved pattern`. The
-  // over-claim to guard against is a claim about THIS pattern.
   assert.doesNotMatch(e.message, /IS saved/, 'nothing was written and nothing may say so');
   assert.doesNotMatch(e.message, /`pbz list`/, 'that is the maybe-saved advice, not this state');
-  assert.doesNotMatch(e.message, /IS rendering/, 'the resume never happened');
+  assert.doesNotMatch(e.message, /IS live/, 'the resume never happened');
 });
 
-test('save: a failed RESUME ack stays maybe-paused and must not claim it is running', async () => {
-  // The easiest over-claim in the method: the resume was sent, so it is
-  // tempting to advance the cursor. It was never acknowledged, so the device
-  // may equally well still be paused. This test is the whole honesty rule.
-  const e = await failed(pbWith(fakeConn({ failAckAt: 2 })).save('src', 'Sweep'));
+test('save: setControls acked but the RESUME lost stays maybe-paused', async () => {
+  // THE regression. Two commands go out and each acks on its own, so the first
+  // wait claims setControls'. Advancing there was the honesty rule inverted,
+  // and it made a frozen wall report itself as rendering. The window where this
+  // is undecidable runs from the resume until frames arrive, so the failure is
+  // injected there — once frames arrive the device has PROVED it is rendering.
+  const e = await failed(pbWith(fakeConn({ suppress: ['resume'], framesThrow: true })).save('src', 'Sweep'));
   assert.equal(e.device.state, 'maybe-paused');
-  assert.doesNotMatch(e.message, /IS rendering on the device/, 'the resume was never acknowledged');
-  assert.doesNotMatch(e.message, /IS saved/);
+  assert.match(e.message, /may be sitting frozen/);
+  assert.doesNotMatch(e.message, /IS live on the device/, 'the resume was never acknowledged');
 });
 
-test('save: zero preview frames reports the pattern as rendering but unsaved', async () => {
-  // Item 8's own reported case: it throws about thumbnails, and the thing the
-  // user actually needs to know is that the wall changed.
+test('save: preview frames are accepted as proof of rendering when the ack was lost', async () => {
+  // The converse of the test above: a lost resume ack is forgiven the moment
+  // the device draws something, because frames are the stronger evidence.
+  const e = await failed(pbWith(fakeConn({ suppress: ['resume', 'activate'] })).save('src', 'Sweep'));
+  assert.equal(e.device.state, 'saved-maybe-inactive');
+  assert.doesNotMatch(e.message, /may additionally be sitting paused/);
+});
+
+test('save: zero preview frames, resume acked, reports live-but-unsaved', async () => {
   const e = await failed(pbWith(fakeConn({ frames: 0 })).save('src', 'Sweep'));
   assert.equal(e.device.state, 'running-unsaved');
   assert.match(e.message, /no preview frames/, 'the original error must survive intact');
-  assert.match(e.message, /IS rendering on the device now/);
+  assert.match(e.message, /IS live on the device/);
   assert.match(e.message, /absent from `pbz list`/);
-  assert.doesNotMatch(e.message, /may be sitting frozen/, 'the resume WAS acked, so this is not the pause case');
+  assert.doesNotMatch(e.message, /may be sitting frozen/, 'the resume WAS acked here');
 });
 
-test('save: a failed putSourceCode ack says the write may not have landed', async () => {
-  const e = await failed(pbWith(fakeConn({ failAckAt: 4 })).save('src', 'Sweep'));
+test('save: zero preview frames with the resume LOST reports the frozen wall instead', async () => {
+  // Item 8's own case over a paused device. A still-paused device is the most
+  // likely reason there were no frames, so answering the error's own "Is the
+  // pattern rendering?" with "yes, definitely" was the worst possible reply.
+  const e = await failed(pbWith(fakeConn({ frames: 0, suppress: ['resume'] })).save('src', 'Sweep'));
+  assert.equal(e.device.state, 'maybe-paused');
+  assert.match(e.message, /no preview frames/);
+  assert.match(e.message, /may be sitting frozen/, 'the likeliest cause of zero frames');
+  assert.doesNotMatch(e.message, /IS live on the device/);
+});
+
+test('save: a withheld putSourceCode ack does not advise deleting anything', async () => {
+  // The advice used to be "delete it before retrying". stableId means a
+  // re-save updates in place, so on every re-save the name is ALREADY listed —
+  // and following that advice destroys the previous good copy.
+  const e = await failed(pbWith(fakeConn({ suppress: ['putSourceCode'] })).save('src', 'Sweep'));
   assert.equal(e.device.state, 'maybe-saved');
-  assert.match(e.message, /sent but never acknowledged/);
-  assert.match(e.message, /partial transfer commits nothing/, 'verified live: truncation leaves no entry');
-  assert.match(e.message, /`pbz list`/, 'the advice has to be actionable');
-  assert.doesNotMatch(e.message, /IS saved to the device/, 'we never got the ack, so we cannot claim it landed');
+  assert.match(e.message, /may or may not have landed/);
+  assert.match(e.message, /retrying is safe/);
+  assert.doesNotMatch(e.message, /delete/i, 'never advise deleting: a re-save overwrites in place');
+  assert.doesNotMatch(e.message, /IS saved to the device/);
 });
 
-test('save: a failed activate reports it IS saved, and names the finishing command', async () => {
-  const e = await failed(pbWith(fakeConn({ failActivate: true })).save('src', 'Sweep'));
+test('save: acks for early chunks do not count as the write completing', async () => {
+  // The device acks EVERY frame and only the last carries the completion
+  // marker, so claiming the first ack advanced the cursor on chunk 1 of N.
+  const e = await failed(pbWith(fakeConn({ chunkAcks: 4, withholdCompletion: true, suppress: ['activate'] })).save('src', 'Sweep'));
+  assert.equal(e.device.state, 'maybe-saved', 'plain chunk acks must not earn "saved"');
+  assert.doesNotMatch(e.message, /IS saved to the device/);
+});
+
+test('save: a withheld activate reports it IS saved, with the true reboot behaviour', async () => {
+  const e = await failed(pbWith(fakeConn({ suppress: ['activate'] })).save('src', 'Sweep'));
   assert.equal(e.device.state, 'saved-maybe-inactive');
   assert.equal(e.device.id, stableId('Sweep'), 'save reports the id it actually wrote');
   assert.match(e.message, /IS saved to the device/);
-  assert.match(e.message, /may revert to the previously active pattern on reboot/);
-  assert.match(e.message, /`pbz activate "Sweep"` finishes the job/);
+  // Verified live three times: the boot pointer follows the most recently
+  // SAVED pattern, so the intuitive "reverts to the previous one" is backwards.
+  assert.match(e.message, /boots whichever pattern was saved most recently/);
+  assert.doesNotMatch(e.message, /revert to the previously active/, 'that claim is false on this firmware');
+  assert.match(e.message, /`pbz activate 'Sweep'` settles it/);
 });
 
-test('save: a name needing quotes stays copy-pasteable in the recovery command', async () => {
-  const e = await failed(pbWith(fakeConn({ failActivate: true })).save('src', 'my "odd" name'));
-  assert.match(e.message, /`pbz activate "my \\"odd\\" name"` finishes the job/);
+test('save: the recovery command is SHELL-quoted, not JSON-quoted', async () => {
+  // JSON quoting leaves backticks and $ live for the shell, and this string is
+  // written to be pasted into one.
+  const e = await failed(pbWith(fakeConn({ suppress: ['activate'] })).save('src', 'a`reboot`$HOME'));
+  assert.match(e.message, /pbz activate 'a`reboot`\$HOME'/, 'single quotes make the shell take it literally');
+  assert.doesNotMatch(e.message, /activate "a`/, 'double quotes would let the shell run it');
 });
 
-test('save: a failure before anything is sent claims nothing at all', async () => {
-  // The absence of `.device` is part of the contract: it means the device was
-  // never touched. A note here would be a pure fabrication.
+test('save: an embedded single quote is escaped rather than breaking out', async () => {
+  const e = await failed(pbWith(fakeConn({ suppress: ['activate'] })).save('src', "it's"));
+  assert.match(e.message, /pbz activate 'it'\\''s'/);
+});
+
+test('save: a send that throws before anything leaves the machine claims nothing', async () => {
+  // Chunk 29 made json()/sendBytecode() throw synchronously on a dead
+  // connection, BEFORE a byte moves. The documented contract is that no
+  // `device` property means the device was never touched.
+  const e = await failed(pbWith(fakeConn({ throwOn: 'setCode' })).save('src', 'Sweep'));
+  assert.match(e.message, /connection died/);
+  assert.equal(e.device, undefined, 'nothing was sent, so nothing may be claimed');
+});
+
+test('save: a putSourceCode send that throws does not claim the data was sent', async () => {
+  const e = await failed(pbWith(fakeConn({ throwOn: 'putSourceCode' })).save('src', 'Sweep'));
+  assert.equal(e.device.state, 'running-unsaved', 'the live push happened; the flash write did not');
+  assert.doesNotMatch(e.message, /pattern data was sent/);
+});
+
+test('save: a compile failure never reaches the device and says nothing about it', async () => {
   const e = await failed(pbWith(fakeConn(), { compileThrows: true }).save('src', 'Sweep'));
   assert.match(e.message, /syntax error/);
-  assert.equal(e.device, undefined, 'nothing reached the device, so nothing may be claimed');
+  assert.equal(e.device, undefined);
 });
 
 test('save: the happy path annotates nothing', async () => {
@@ -130,20 +207,37 @@ test('save: the happy path annotates nothing', async () => {
   assert.ok(res.previewBytes > 0);
 });
 
-test('run: a failed resume reports the frozen wall, with no name to quote', async () => {
-  // run() takes a source and has no name, so the note must read correctly
-  // without one — and must never mention saving, which run() never does.
-  const e = await failed(pbWith(fakeConn({ failAckAt: 2 })).run('src'));
-  assert.equal(e.device.state, 'maybe-paused');
-  assert.equal(e.device.id, undefined, 'run saves nothing, so there is no id to report');
-  assert.match(e.message, /may be sitting frozen/);
-  assert.doesNotMatch(e.message, /undefined/, 'the missing name must not leak into the message');
-  assert.doesNotMatch(e.message, /IS saved/, 'run never saves anything');
+test('save: no save-side state can coexist with an unconfirmed resume', async () => {
+  // Not a wish, a structural fact: every save-side state is downstream of the
+  // preview frames, and frames prove the renderer is running. This pins it so
+  // nobody adds a "paused and saved" combination that cannot occur.
+  const e = await failed(pbWith(fakeConn({ suppress: ['resume', 'putSourceCode'] })).save('src', 'Sweep'));
+  assert.equal(e.device.state, 'maybe-saved', 'frames arrived, so the pause question is settled');
+  assert.doesNotMatch(e.message, /sitting frozen/);
 });
 
-test('run: reaching its own success state annotates nothing, even though the device changed', async () => {
-  // run()'s contract IS "live, not saved", so the state it leaves on success is
-  // the one the caller asked for. Nothing to report.
+test('run: a lost resume ack fails loudly instead of reporting success', async () => {
+  // Two acks for the pair is verified live (22ms and 44ms), so a missing second
+  // one is a real signal, not a firmware quirk. Returning ok here is how
+  // `pbz run` printed "ok (live, not saved)" over a frozen wall.
+  const e = await failed(pbWith(fakeConn({ suppress: ['resume'] })).run('src'));
+  assert.ok(e, 'must not resolve');
+  assert.equal(e.device.state, 'maybe-paused');
+  assert.equal(e.device.id, undefined, 'run saves nothing, so there is no id');
+  assert.doesNotMatch(e.message, /undefined/, 'the missing name must not leak');
+  assert.doesNotMatch(e.message, /IS saved/);
+});
+
+test('run: the happy path annotates nothing', async () => {
   const res = await pbWith(fakeConn()).run('src');
   assert.ok(res.bytecode);
+});
+
+test('a thrown non-Error passes through untouched rather than being replaced', async () => {
+  // Assigning a property to a string throws in strict mode, which would swap
+  // the real failure for a TypeError pointing at the annotation helper.
+  const pb = pbWith(fakeConn());
+  pb.compile = async () => { throw 'lz: bad input'; }; // eslint-disable-line no-throw-literal
+  const e = await failed(pb.save('src', 'Sweep'));
+  assert.equal(e, 'lz: bad input');
 });

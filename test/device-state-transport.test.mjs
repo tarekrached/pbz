@@ -72,3 +72,22 @@ test('a transport death is annotated WITHOUT losing the transport\'s own message
     assert.match(e.message, /may be sitting frozen/, 'and our note is appended, not substituted');
   });
 });
+
+test('a save annotation cannot leak onto a concurrent reader\'s error', async () => {
+  // The transport used to hand every waiter ONE shared Error instance, so
+  // annotating the one a save caught wrote on the object a concurrent read was
+  // also holding — and reads on one instance are explicitly supported. Each
+  // rejection now gets its own instance.
+  await withFakeSocket(async (getSock) => {
+    const pb = stubbedPb();
+    const saving = failed(pb.save('src', 'Sweep'));
+    const reading = failed(pb.getStatus());     // a monitor loop, the supported concurrency
+    await new Promise(r => setTimeout(r, 30));
+    getSock().onclose?.({ code: 1006 });
+    const [saveErr, readErr] = [await saving, await reading];
+    assert.ok(saveErr.device, 'the save reports what it left');
+    assert.equal(readErr.device, undefined, "the reader's error must not carry the save's state");
+    assert.doesNotMatch(readErr.message, /sitting frozen/, "nor the save's note");
+    assert.notEqual(saveErr, readErr, 'and they must not be the same object');
+  });
+});

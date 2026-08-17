@@ -141,14 +141,14 @@ test('fail() rejects a parked waiter immediately, rather than letting it time ou
   const q = makeQueues();
   const t0 = Date.now();
   const waiting = q.waitText('{"ack"', 3000, q.mark());
-  q.fail(new Error('websocket: closed mid-exchange'));
+  q.fail(() => new Error('websocket: closed mid-exchange'));
   await assert.rejects(waiting, /closed mid-exchange/);
   assert.ok(Date.now() - t0 < 500, 'must reject on the failure, not run out the 3s wait');
 });
 
 test('fail() rejects waiters that arrive after the failure, too', async () => {
   const q = makeQueues();
-  q.fail(new Error('websocket: closed mid-exchange'));
+  q.fail(() => new Error('websocket: closed mid-exchange'));
   await assert.rejects(q.waitText('{"ack"', 3000, q.mark()), /closed mid-exchange/);
   await assert.rejects(q.waitBinary(3000, 5, q.mark()), /closed mid-exchange/);
 });
@@ -158,8 +158,8 @@ test('fail() is idempotent and the FIRST cause wins', async () => {
   // ("ECONNRESET"), the close is the generic one, and the generic must not
   // overwrite it on the way past.
   const q = makeQueues();
-  q.fail(new Error('ECONNRESET'));
-  q.fail(new Error('generic close'));
+  q.fail(() => new Error('ECONNRESET'));
+  q.fail(() => new Error('generic close'));
   await assert.rejects(q.waitText('{"ack"', 100, q.mark()), /ECONNRESET/);
 });
 
@@ -169,7 +169,7 @@ test('fail() does not discard frames that already arrived', async () => {
   const q = makeQueues();
   const m = q.mark();
   q.pushBinary(chunk(5, 1, [9, 9, 9]));
-  q.fail(new Error('websocket: closed mid-exchange'));
+  q.fail(() => new Error('websocket: closed mid-exchange'));
   assert.equal(q.peekBinary(5, m).length, 1, 'a frame that arrived before the drop is still a frame');
 });
 
@@ -180,7 +180,7 @@ test('collectChunks reports the transport failure, not its own "stopped sending"
   const m = q.mark();
   q.pushBinary(chunk(7, 1, [1, 2]));           // first chunk, no last flag
   const reading = q.collectChunks(7, { ms: 3000, after: m });
-  q.fail(new Error('websocket: closed mid-exchange'));
+  q.fail(() => new Error('websocket: closed mid-exchange'));
   await assert.rejects(reading, /closed mid-exchange/);
 });
 

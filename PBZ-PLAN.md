@@ -875,7 +875,8 @@ the fix surface before a first release:
    nothing in pbz except `run`/`save` themselves sends `{pause:false}`, so the user has a dark
    wall and no obvious verb. `run()` has the same window and is fixed with it. Errors from both
    now carry a note saying what the device is holding and how to get it back, plus a structured
-   `e.device` for library callers.
+   `e.device` for library callers. Review of the first cut found the cursor advancing one ack too
+   early in two places; see the chunk entry.
 9. **Cap eviction can still produce a silent short read in `collectChunks`** — reproduced at
    `maxQueued` 3; needs >256 mid-transfer binary frames in practice. The surviving frame's flag
    bits would catch it (first-chunk bit clear on a frame that should start a transfer).
@@ -1352,49 +1353,69 @@ it had just started was still rendering, unsaved and absent from `pbz list`.
   one: loading pauses the device, and **nothing in pbz except `run`/`save` themselves ever sends
   `{pause:false}`**, so a user who trips it has a dark wall and no obvious verb. Item 8's own
   case at least leaves something visibly running.
-- **The line order IS the honesty rule.** A `maybe-` state is assigned BEFORE its send (bytes on
-  the wire, nothing heard back); a bare state AFTER the device's own ack. A reviewer checks that
-  a claim is earned by looking at where the assignment sits, without reading the prose. The
-  easiest over-claim in the method is advancing past the resume before its ack, and it has its
-  own test.
-- **Never say "saved" without the `putSourceCode` ack; never say "not saved" with it.**
-  `maybe-saved` and `saved-maybe-inactive` are separated by exactly one acknowledged flash write
-  and the messages must not blur it.
-- **`run()` is in scope for the pause window only.** Its contract is already "live, not saved",
-  so the state it leaves on success is the one the caller asked for — and there is no failure
-  point after its resume anyway. Scoping it out would have meant writing the helper and then
-  declining to call it from one of its two identical call sites.
+- **The line order IS the honesty rule.** A `maybe-` state is assigned AFTER its send returns
+  (the sends are synchronous and throw on a dead connection before a byte moves, so returning
+  means the bytes are on the socket) and a bare state AFTER the device's own ack. A reviewer
+  checks that a claim is earned by looking at where the assignment sits.
+- **The first cut got its own rule wrong, and review caught it.** `{setControls:{}}` and
+  `{pause:false}` go out together and **each acks independently** (verified live: acks at 22 ms
+  and 44 ms). The queue hands back the oldest match, so `expectAck(…, 'save: resume')` claims
+  *setControls'* ack, not the resume's. Advancing to `running-unsaved` there asserted the wall
+  was rendering on evidence that said nothing about the pause — and made item 8's own zero-frame
+  error answer its "Is the pattern rendering?" with a confident yes over a frozen wall. The
+  resume's own ack is the NEXT one.
+- **Preview frames are better evidence than the ack.** Frames arriving prove the renderer is
+  running, so a lost resume ack is forgiven the moment the device draws something. A useful
+  consequence: **no save-side state can coexist with an unconfirmed resume**, because every one
+  of them is downstream of the frames. A combined "paused and saved" state cannot occur, and a
+  test pins that so nobody adds one.
+- **`putSourceCode`'s completion is the LAST ack, not the first.** The device acks **every**
+  binary frame and only the final one carries `saveProgramSourceFile` (verified live on a
+  4-chunk write: plain acks at 41/67/94 ms, marked at 126 ms). Claiming the first advanced the
+  cursor on chunk 1 of N, so on a board slow enough for it to matter we would have reported a
+  completed flash write while the transfer was still in flight. `CHUNK_BYTES` is now exported
+  from `protocol.mjs` so the ack count is derived rather than duplicated.
+- **Never say "saved" without the completion ack; never say "not saved" with it.**
+- **`run()` is in scope for the pause window only,** and it no longer returns success on a lost
+  resume: `pbz run` printed "ok (live, not saved)" over a frozen wall, which is the same false
+  success Chunk 24 existed to remove.
 - **Annotated in place, not re-wrapped.** `defrag()`'s precedent (Chunk 28) is prose in the
   message, and that stays. The divergence is refusing to build a new `Error`: Chunk 29 spent a
-  whole pass making transport errors carry a real cause and a pointer at the recovery playbook,
-  and flattening those into an interpolated string would undo half of it. A test asserts the
-  transport's own text survives alongside the note.
+  whole pass making transport errors carry a real cause and a recovery pointer, and flattening
+  those into a string would undo half of it. A test asserts the transport's own text survives
+  alongside the note. The helper also refuses to annotate a non-object or a non-string `message`,
+  because assigning a property to a thrown string throws in strict mode and would replace the
+  real failure with a TypeError pointing at the annotation helper.
+- **The transport stopped sharing one Error instance.** `protocol.mjs` recorded a single `dead`
+  object and handed it to every throw and every rejection. Chunk 29's review called that
+  cosmetic "unless something attaches per-call context"; this chunk is that something, and a
+  concurrent read — explicitly supported on one instance — picked up a save's annotation.
+  `queue.fail` now takes a factory and every rejection gets its own instance.
 - **`e.device` rides along for the library half.** `{state, id}`, typed in the `.d.mts`. The
-  message stays the contract for the CLI (`die(e.message)`), but a fan-out caller
-  (`examples/fan-out.mjs`) deciding "did I leave device 3 frozen, or merely unsaved?" should not
-  be regexing prose that gets rewritten between chunks. **Its absence is part of the contract:
-  no `device` property means nothing was sent and the wall was never touched.**
-- **No message names the invoking verb**, because `import()` routes through `save()` and
-  "re-run `pbz save`" would be a lie for `pbz import`. Recovery verbs are named; the name is
-  quoted with `JSON.stringify` so an awkward one stays copy-pasteable.
-- **Live-verified on the spare (192.168.1.187), 2026-08-16, and it corrected one message.**
-  `{"pause":true}` **survives the client disconnecting** — `fps` read **0.00** five seconds
-  after the socket closed — so the frozen-wall hazard is real and `fps 0` is a true diagnostic.
-  Both printed recoveries work: `pbz activate` cleared the pause (fps back to 140.16) and so did
-  re-running (`pbz run` → 68.73). On the flash half, a `putSourceCode` acked but never activated
-  **is** listed with the active pointer unmoved, as claimed. But a genuinely truncated transfer
-  (4-chunk blob, 2 chunks sent) **left no entry at all** — the plan had predicted a possibly
-  incomplete one. So `maybe-saved` says the better, true thing: a partial transfer commits
-  nothing, therefore an entry appearing in `pbz list` means the write completed and only the ack
-  was lost. The device stayed healthy throughout and the test entries were deleted.
-- **Acceptance:** 12 new hermetic tests (10 fake-connection, 2 through the real transport in
-  their own file so the one genuine 3 s timeout overlaps other files rather than summing),
-  **204 total**, typecheck green. **Every message is asserted twice — for what it claims and for
-  what it must NOT claim** — because a state cursor one step ahead produces a plausible, wrong,
-  confident message rather than a crash. Load-bearing proof: against the pre-fix library 9 of 12
-  fail (the 3 that pass assert the ABSENCE of a note, so they pass by construction), and two
-  mutations — advancing the resume cursor before its ack, and swapping the two save-side states —
-  are each caught by exactly the test written for them.
+  message stays the contract for the CLI (`die(e.message)`), but a fan-out caller should not be
+  regexing prose. **Its absence is part of the contract: no `device` property means nothing was
+  sent and the wall was never touched.**
+- **No message names the invoking verb**, because `import()` routes through `save()`. Recovery
+  verbs are named, and the pattern name is **shell**-quoted, not JSON-quoted: this text gets
+  pasted into a shell, where a name containing a backtick in JSON quotes would EXECUTE.
+- **Live-verified on the spare (192.168.1.187), 2026-08-16, twice — and hardware overturned two
+  messages.** Confirmed: `{"pause":true}` survives the client disconnecting (`fps` reads **0.00**
+  five seconds after close), so the frozen-wall hazard is real and `fps 0` is a true diagnostic;
+  both printed recoveries work (`pbz activate` → 140.16, re-running → 76.69); **`pbz seq resume`
+  does NOT clear a render pause** (it toggles `runSequencer`, the playlist auto-advance), so
+  naming only run/activate is complete rather than lazy; and a genuinely truncated
+  `putSourceCode` (15-chunk valid payload, final chunk withheld) **commits nothing**.
+  **Overturned:** an acked-but-unactivated save does NOT leave the device reverting to the
+  previously active pattern on reboot — reproduced three times, the boot pointer follows the most
+  recently **saved** pattern, and a later `activate` of something else does not stick. Both
+  messages that leaned on the intuitive behaviour were rewritten to the measured one.
+- **Acceptance:** 21 new hermetic tests, **213 total**, typecheck green. **Every message is
+  asserted twice — for what it claims and for what it must NOT claim** — because a state cursor
+  one step ahead produces a plausible, wrong, confident message rather than a crash. Load-bearing
+  proof: against the pre-fix library the new tests fail (the handful that pass assert the ABSENCE
+  of a note, so they pass by construction); mutations that advance the resume cursor before its
+  ack, that swap the two save-side states, and that restore the shared Error instance are each
+  caught by exactly the test written for them.
 - **Size:** S.
 - **Deliberately NOT in scope:** the single-step writes (`activate`, `delete`, `setControls`,
   `setConfig`), whose existing messages already describe their whole story; `defrag()`, which
