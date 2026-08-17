@@ -938,6 +938,18 @@ the fix surface before a first release:
     moved the small writes to 8 s; `save()`'s internal acks kept the 3 s default, and the README
     documents that deliberately. On a GC-grinding board this is where `save` fails first. Same
     origin as 12, same reason for keeping it separate.
+19. **A device that goes silent with TCP still up is INVISIBLE to this transport.** Measured
+    against real undici: the socket stays OPEN, `dead()` stays null, `_getConn`'s reuse predicate
+    stays true so every later call reuses the corpse, each wait resolves null at its own timeout
+    and is reported as "no response", and **writes return success and go nowhere**. This is the
+    most likely failure this hardware has — the README documents connection bursts wedging the ws
+    server — and `readyState` cannot see it, because readyState says nothing about whether the
+    peer is answering. Only an outbound liveness probe (a ws ping, or a cheap request whose reply
+    is awaited) would. Chunk 30's liveness poll catches the CLOSING park; it does not catch this.
+20. **undici has no timeouts of its own, anywhere.** 65s of total silence produced zero events in
+    every silent-peer behaviour measured, and a peer that accepts TCP but never answers the HTTP
+    upgrade leaves the client in CONNECTING indefinitely. Every timeout in this system is one pbz
+    wrote. Worth knowing before anyone removes one for being "belt and braces".
 
 **Explicitly UNTESTED, don't assume otherwise:** `list()` against a device with **zero saved
 patterns**. Chunk 24 moved it from a timeout-terminated read to a flag-terminated one, and the
