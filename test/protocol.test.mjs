@@ -1,9 +1,9 @@
 // Guards for the socket half (lib/protocol.mjs), using an injected fake
 // WebSocket so no device or network is involved.
 //
-// Both tests here are regressions for defects introduced BY a fix, which is the
-// reason they exist rather than being covered at the queue level: the bugs were
-// in the wiring between the queue and the socket, not in either one.
+// Every test here is a regression for a defect introduced BY a fix, which is
+// the reason they live here rather than at the queue level: the bugs were in
+// the wiring between the queue and the socket, not in either one.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { connect } from '../lib/protocol.mjs';
@@ -144,18 +144,23 @@ test('a failed open closes the socket and disarms the idle timer, instead of lea
 // A post-open error was dropped on the floor: `ws.onerror` only ever rejected
 // the `opened` promise, which is already settled by the time the connection is
 // in use, so rejecting it again is a no-op. Nothing told a parked waiter the
-// socket was gone, so it ran out its full timeout and reported a timeout, and
-// the next send threw a bare InvalidStateError naming neither the device nor
-// the connection. save() is the case that hurt: it can push bytecode, unpause
-// the pattern, and then lose the socket before the activate.
+// socket was gone, so it ran out its full timeout and reported a timeout — and
+// then the next send SILENTLY SUCCEEDED, because send() on a closed WHATWG
+// WebSocket is a no-op, not a throw (measured on Node 26.5.0; the older note
+// claiming InvalidStateError was wrong, and the truth is worse). save() is the
+// case that hurt: it can push bytecode, unpause the pattern, and then lose the
+// socket before the activate.
 
 test('a post-open error reaches a parked waiter instead of being swallowed', async () => {
   const { c, ws } = fakeConnect(5000);
   await c.opened;
   const m = c.mark();
   const waiting = c.waitText('{"ack"', 3000, m);
-  ws.onerror?.({ message: 'ECONNRESET' });
-  await assert.rejects(waiting, /ECONNRESET/, 'the error that killed the socket must reach the caller');
+  // The real shape: undici's ErrorEvent has an EMPTY `message` and carries the
+  // cause on `.error`. An earlier cut of this test passed `{message:'…'}`, a
+  // shape Node never produces, so it was validating a fiction.
+  ws.onerror?.({ message: '', error: new TypeError('read ECONNRESET') });
+  await assert.rejects(waiting, /read ECONNRESET/, 'the error that killed the socket must reach the caller');
 });
 
 test('a device that hangs up mid-exchange fails the wait fast, and says so', async () => {
@@ -210,4 +215,115 @@ test('collectFrames abandons a dead socket instead of polling out its window', a
   ws.onclose?.({ code: 1006 });
   await assert.rejects(frames, /closed the connection mid-exchange/);
   assert.ok(Date.now() - t0 < 1000, 'must not poll the full 4s window against a dead socket');
+});
+
+// --- Chunk 29 review follow-ups --------------------------------------------
+// Three defects the review of the first cut found. Each is a way the new
+// fail-fast path was too eager and destroyed something that was still good.
+
+test('collectFrames keeps a complete set that arrived before the drop', async () => {
+  // The first cut checked liveness BEFORE peeking, so a device that streamed
+  // every frame and then hung up in the same tick lost the lot — and save()
+  // would report failure for a thumbnail it already had.
+  const { c, ws } = fakeConnect(5000);
+  await c.opened;
+  const pending = c.collectFrames(2, 4000);
+  ws.deliver(new Uint8Array([5, 1, 2, 3]).buffer);
+  ws.deliver(new Uint8Array([5, 4, 5, 6]).buffer);
+  ws.onclose?.({ code: 1006 });
+  const frames = await pending;
+  assert.equal(frames.length, 2, 'frames already in hand must survive the death that follows them');
+});
+
+test('a wait on a dead connection does not arm a fresh idle timer', async () => {
+  // using() re-armed unconditionally, so every post-death call left a live
+  // timer behind — the same event-loop-keeper the failed-open cleanup above
+  // exists to prevent, back again on the error path.
+  const { c, ws } = fakeConnect(50);
+  await c.opened;
+  ws.onclose?.({ code: 1006 });
+  ws.closed = false; // a leaked timer would flip this back
+  await assert.rejects(c.waitText('{"ack"', 500, c.mark()), /mid-exchange/);
+  await sleep(120); // well past idleMs
+  assert.equal(ws.closed, false, 'a dead connection must not arm a fresh timer');
+});
+
+test('a chunked transfer outliving the idle window is not killed as idle', async () => {
+  // collectChunks re-armed once, at call time. A transfer slower than idleMs
+  // but healthy chunk-to-chunk tripped our own backstop, which then reported
+  // "no request used it" about a connection a request was actively using.
+  // This device is documented stalling for 107s, so the case is real.
+  const { c, ws } = fakeConnect(60);
+  await c.opened;
+  const m = c.mark();
+  const reading = c.collectChunks(7, { ms: 500, after: m });
+  for (let i = 0; i < 5; i++) {
+    await sleep(40); // 200ms total, far past the 60ms idle window
+    ws.deliver(new Uint8Array([7, i === 4 ? 4 : 2, 65 + i]).buffer);
+  }
+  assert.equal((await reading).toString(), 'ABCDE');
+  assert.equal(ws.closed, false, 'the backstop must not close a connection mid-transfer');
+});
+
+// A close() that only takes effect a turn later. This is what Node actually
+// does — ws.close() returns with readyState CLOSING and dispatches `close`
+// later — and the synchronous FakeWS above hides it. Two of the tests here
+// passed against FakeWS for the wrong reason until this existed.
+class AsyncCloseWS extends FakeWS {
+  close() {
+    this.readyState = 2 /* CLOSING */;
+    queueMicrotask(() => { this.readyState = 3; this.closed = true; this.onclose?.({ code: 1000 }); });
+  }
+}
+function fakeConnectAsyncClose(idleMs) {
+  let sock;
+  const c = connect('fake', { idleMs, WebSocketImpl: class extends AsyncCloseWS {
+    constructor(url) { super(url); sock = this; }
+  } });
+  return { c, get ws() { return sock; } };
+}
+
+test('an answer that arrived before the drop is still delivered, not discarded', async () => {
+  // THE one that matters. Waiters poll on an interval, and the ws stack
+  // dispatches buffered message events and the close event in the same batch,
+  // so "device answered, then hung up" reliably leaves the answer sitting in
+  // the queue unclaimed. Rejecting without one last look turns a write the
+  // device genuinely completed into a reported failure.
+  const { c, ws } = fakeConnect(5000);
+  await c.opened;
+  const m = c.mark();
+  const waiting = c.waitText('{"activeProgram"', 8000, m);
+  ws.deliver('{"activeProgram":{"name":"X"}}'); // the device answers...
+  ws.onclose?.({ code: 1006 });                 // ...and hangs up in the same batch
+  assert.match(await waiting, /"name":"X"/, 'a completed write must not be reported as a failure');
+});
+
+test('a contentless ErrorEvent still names the device and the playbook', async () => {
+  // undici gives ErrorEvent an empty `.message`, so reading only that degraded
+  // every real death to the literal string "connection error" — and since the
+  // error event beats the close event, that vaguer message won.
+  const { c, ws } = fakeConnect(5000);
+  await c.opened;
+  ws.onerror?.({});
+  assert.match(c.dead().message, /connection to fake:81 failed mid-exchange/);
+  assert.match(c.dead().message, /no detail reported by the socket/);
+  assert.match(c.dead().message, /Device etiquette/, 'must still point at the recovery playbook');
+});
+
+test('our own close marks the connection dead at once, not a turn later', async () => {
+  // Against a real socket, close() leaves readyState CLOSING and `close` fires
+  // later. In that window a send SILENTLY no-ops — reporting success for a
+  // write that went nowhere, which is the exact failure this chunk exists to
+  // end. Recording the death at the moment we initiate it closes the window.
+  const { c } = fakeConnectAsyncClose(5000);
+  await c.opened;
+  c.close();
+  assert.throws(() => c.json({ ping: true }), /closed by pbz/, 'a send in the CLOSING window must not silently succeed');
+});
+
+test('the idle backstop marks the connection dead at once too', async () => {
+  const { c } = fakeConnectAsyncClose(40);
+  await c.opened;
+  await sleep(90);
+  assert.throws(() => c.json({ ping: true }), /no request used it for 40ms/);
 });
