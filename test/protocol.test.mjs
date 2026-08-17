@@ -329,22 +329,33 @@ test('the idle backstop marks the connection dead at once too', async () => {
   assert.throws(() => c.json({ ping: true }), /no request used it for 40ms/);
 });
 
-test('an Error with an empty message still kills the connection for good', async () => {
-  // The death is tracked by a flag, not by the truthiness of the stored
-  // message. Guarding on the string let an empty-message Error leave the
-  // connection alive-but-broken, and let a SECOND cause overwrite the first —
-  // which the queue's factory closes over, so even already-parked waiters would
-  // have started receiving the later, vaguer reason.
-  const { c, ws } = fakeConnect(5000);
-  await c.opened;
-  ws.onerror?.({ message: '', error: { message: '' } }); // nothing usable at all
-  assert.ok(c.dead(), 'a contentless error must still mark the connection dead');
-  const first = c.dead().message;
-  ws.onclose?.({ code: 1006 }); // a second, later cause
-  assert.equal(c.dead().message, first, 'first cause must still win');
-  assert.throws(() => c.json({ ping: true }), /./, 'and sends must still refuse');
-});
+test('a close code upgrades a contentless error, but cannot overwrite a detailed one', async () => {
+  // Measured on real hardware: a device rebooting mid-command fires `error`
+  // with an EMPTY message and then `close` carrying `code 1006`, 0.2ms apart.
+  // Plain first-cause-wins kept the useless half and discarded the code that
+  // distinguishes a device that dropped from a clean hangup. So the rule is
+  // first-cause-wins EXCEPT that detail may upgrade emptiness — never the
+  // reverse, or a vague close would still be able to bury a real error.
+  const a = fakeConnect(5000);
+  await a.c.opened;
+  a.ws.onerror?.({ message: '', error: { message: '' } }); // nothing usable
+  assert.ok(a.c.dead(), 'a contentless error must still mark the connection dead');
+  a.ws.onclose?.({ code: 1006 });
+  assert.match(a.c.dead().message, /code 1006/, 'the code must win over an empty reason');
+  assert.throws(() => a.c.json({ ping: true }), /./, 'and sends still refuse');
 
+  const b = fakeConnect(5000);
+  await b.c.opened;
+  b.ws.onerror?.({ message: '', error: new TypeError('read ECONNRESET') }); // detailed
+  b.ws.onclose?.({ code: 1006 });
+  assert.match(b.c.dead().message, /read ECONNRESET/, 'a detailed cause must NOT be overwritten');
+
+  const d = fakeConnect(5000);
+  await d.c.opened;
+  d.ws.onerror?.({ message: '', error: { message: '' } });
+  d.ws.onclose?.({}); // a close with no code is no better than what we had
+  assert.doesNotMatch(d.c.dead().message, /code/, 'a contentless close must not churn the reason');
+});
 test('a send refuses on a socket that closed but has not fired its event yet', async () => {
   // A real socket flips readyState when it processes the peer's close frame and
   // dispatches `close` a task later. In that window nothing has told us the
