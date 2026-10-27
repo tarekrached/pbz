@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Instructions for coding agents working in this repo (Codex, Cursor, and anything
-else that reads this convention; Claude Code reads `CLAUDE.md`).
+else that reads this convention).
 
 **Read [README.md § Device etiquette & recovery](README.md#device-etiquette--recovery)
 before running anything that talks to a Pixelblaze.** That section is the single
@@ -43,3 +43,4 @@ Everything else:
 - Read methods that map 1:1 to a wire response return it parsed and unrenamed.
   Composites build on those accessors and only add fields that bake in a decode.
   Cosmetic labeling is the CLI's job.
+- **Review before publishing.** This repo is public, so code review happens locally on the branch before any push, never on the PR afterward. A draft PR body is written to a `.md` and opened rendered for Tarek, and waits for his OK before `gh pr create`; don't open the PR and iterate on the body (2026-08-14). Flash-dump, WiFi and NVS material stays out of PRs and forum posts.
