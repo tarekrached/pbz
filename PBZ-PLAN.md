@@ -381,6 +381,10 @@ and doing only the text upload leaves the render geometry unchanged:
     few seconds each); ffmpeg conversion + paired terminal cast at extraction time.
   - **Deferred post-publish:** `npm publish`, CI, docs site, full JSDoc/`.d.ts` pass.
     `AGENTS.md` stub stays (cheap, useful).
+  - **Versioning starts at `npm publish`, not before** (decided 2026-11-24). Until then
+    everyone runs `main`, `package.json` stays `0.1.0`, and changes are plain commits. At
+    publish: tag `v0.1.0`, start a CHANGELOG, semver bump per release. Error *messages* keep
+    their leading words stable and add detail after them; `err.code` is the branchable part.
 - **Landed 2026-08-11.** `npm test` 27/27 green, and 22/27 + 5 skipped with the captured web UI
   removed — the skip path is exercised, not assumed. What the plan didn't spell out, found while
   doing it:
