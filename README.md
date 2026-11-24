@@ -55,6 +55,8 @@ pbz's own directory. That's so a project can keep its own `pb.config.json` and
 pbz compile patterns/foo.js         # validate + list exported controls; sends nothing
 pbz run patterns/foo.js             # push live, NOT saved. The iteration loop
 pbz save patterns/foo.js [Name]     # persist + activate, renders a preview thumbnail
+                                    #   the id derives from Name, so re-saving the same
+                                    #   name replaces that pattern in place (same id)
 pbz list                            # saved patterns, id + name
 pbz activate "Rainbow Worms"        # switch the active pattern
 pbz delete "Old Thing"
@@ -177,6 +179,14 @@ agent-driven bursts are exactly the risky shape:
   monitor script, …). A quiet-looking terminal is **not** evidence of a quiet
   device: one wedge here was caused by a home-automation integration polling
   throughout a session that was only counting its own traffic.
+- **Rule out your own machine before blaming the device.** On macOS, a
+  `could not connect` whose cause is `EHOSTUNREACH` can be Local Network
+  privacy denying node, not a wedged Pixelblaze. Tell: `curl http://<ip>/`
+  and `nc -z <ip> 81` succeed (Apple's `/usr/bin` tools are exempt) while
+  `node -e 'fetch("http://<ip>/")'` fails. The denial follows whichever app
+  launched your terminal's process tree (a tmux server started from a stale
+  terminal helper inherits it), so `pbz ping` from a fresh terminal window
+  is the quickest check. Rebooting the device does nothing for this.
 - **Recovery playbook.** The failure is asymmetric. HTTP sometimes heals on its
   own as TCP orphans time out; the websocket server never does, and its slots
   leak until restart.
