@@ -46,3 +46,8 @@ test('success returns the response as-is', async () => {
   const res = { ok: true };
   assert.equal(await httpFetch('http://h/', {}, async () => res), res);
 });
+
+test('probeRoute: a port nobody listens on is reachable-but-refused, so null (not a can\'t-route code)', async () => {
+  const { probeRoute } = await import('../lib/http.mjs');
+  assert.equal(await probeRoute('127.0.0.1', { port: 1, timeoutMs: 2000 }), null);
+});

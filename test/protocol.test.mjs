@@ -39,9 +39,9 @@ function fakeConnect(idleMs) {
   return { c, get ws() { return sock; } };
 }
 
-function fakeConnectFailing(idleMs) {
+function fakeConnectFailing(idleMs, probeRoute = async () => null) {
   let sock;
-  const c = connect('fake', { idleMs, WebSocketImpl: class extends NeverOpensWS {
+  const c = connect('fake', { idleMs, probeRoute, WebSocketImpl: class extends NeverOpensWS {
     constructor(url) { super(url); sock = this; }
   } });
   return { c, get ws() { return sock; } };
@@ -510,6 +510,28 @@ test('a polite close is not described as a fault', async () => {
   assert.match(c.dead().message, /closed the connection \(code 1000, "bye"\)/, 'and the reason is not discarded');
   assert.doesNotMatch(c.dead().message, /wedged its ws server/);
   assert.doesNotMatch(c.dead().message, /mid-exchange/);
+});
+
+test('a connection that never opened because this machine cannot route says so, not "wedged"', async () => {
+  // Node's ws error event carries no code; the route probe is what tells a
+  // macOS Local Network denial (EHOSTUNREACH, instant) from a wedged device.
+  const { c, ws } = fakeConnectFailing(50, async () => 'EHOSTUNREACH');
+  const rejection = c.opened.catch((x) => x);
+  ws.onerror?.({ message: '' });
+  const e = await rejection;
+  assert.match(e.message, /^websocket: could not connect to fake:81 \(EHOSTUNREACH\)/);
+  assert.match(e.message, /Local Network privacy/);
+  assert.doesNotMatch(e.message, /wedged its ws server/);
+  assert.equal(e.code, 'EHOSTUNREACH');
+});
+
+test('a failing route probe falls back to the ordinary playbook message', async () => {
+  const { c, ws } = fakeConnectFailing(50, async () => { throw new Error('probe blew up'); });
+  const rejection = c.opened.catch((x) => x);
+  ws.onerror?.({ message: '' });
+  const e = await rejection;
+  assert.match(e.message, /could not connect to fake:81.*Device etiquette & recovery/);
+  assert.equal(e.code, undefined);
 });
 
 test('a connection that never opened names the device and the playbook', async () => {
